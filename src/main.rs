@@ -6,11 +6,40 @@ use winsocat::endpoint::{parse_factory, parse_strategy, Strategy};
 use winsocat::relay;
 
 #[derive(Parser)]
-#[command(name = "winsocat", about = "socat-like relay program")]
+#[command(
+    name = "winsocat",
+    about = "Socat-like relay for bridging I/O streams",
+    after_help = "\
+Address format:
+  TAG:address,option1=value1,option2=value2
+
+Address types for ADDRESS1 (connect or listen):
+  STDIO                       Standard input/output
+  TCP:<host>:<port>           TCP connect
+  TCP-LISTEN:<host>:<port>    TCP listen
+  EXEC:<command>              Child process stdin/stdout
+  UNIX:<path>                 Unix socket connect         [unix]
+  UNIX-LISTEN:<path>          Unix socket listen          [unix]
+  NPIPE:<server>:<pipe>       Named pipe connect          [windows]
+  NPIPE-LISTEN:<pipe>         Named pipe listen           [windows]
+  HVSOCK:<vmId>:<serviceId>   Hyper-V socket connect      [windows]
+  HVSOCK-LISTEN:<serviceId>   Hyper-V socket listen       [windows]
+  WSL:<cmd>,distribution=..   WSL process                 [windows]
+  SP:<port>,baudrate=...      Serial port
+
+Address types for ADDRESS2 (connect only):
+  STDIO, TCP, EXEC, UNIX, NPIPE, HVSOCK, WSL, SP
+
+Examples:
+  winsocat TCP-LISTEN:127.0.0.1:8000 STDIO
+  winsocat STDIO TCP:127.0.0.1:80
+  winsocat TCP-LISTEN:127.0.0.1:9000 EXEC:ls
+  winsocat TCP-LISTEN:127.0.0.1:8080 TCP:example.com:80"
+)]
 struct Cli {
-    /// First address (strategy: supports connect and listen modes)
+    /// First address (connect or listen mode)
     address1: String,
-    /// Second address (factory: connect-only, instantiated per connection)
+    /// Second address (connect only, created per connection)
     address2: String,
 }
 
