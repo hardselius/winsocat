@@ -82,40 +82,13 @@ fn spawn_send_recv_server(
     (local_addr, received)
 }
 
-/// Return the EXEC address string for a safe echo-like command on the current platform.
-/// On unix: `EXEC:cat`  (copies stdin → stdout)
-/// On windows: `EXEC:findstr "^"`  (copies stdin → stdout, matching all lines)
-///
-/// Note: `findstr` on Windows is line-buffered with `\r\n` terminators.
-/// Tests using this must send lines ending with `\r\n` (see `exec_line()`).
-fn exec_echo_addr() -> &'static str {
-    if cfg!(windows) {
-        r#"EXEC:findstr "^""#
-    } else {
-        "EXEC:cat"
-    }
-}
-
-/// Return test payload with platform-appropriate line endings.
-/// On Windows, `findstr` requires `\r\n` to recognize a line boundary
-/// and flush output. On unix, `cat` works with plain `\n`.
-fn exec_line(msg: &str) -> Vec<u8> {
-    if cfg!(windows) {
-        format!("{msg}\r\n").into_bytes()
-    } else {
-        format!("{msg}\n").into_bytes()
-    }
-}
-
-/// Expected output length from the echo command for a given message.
-/// `findstr` on Windows echoes the line including `\r\n`;
-/// `cat` on unix echoes including `\n`.
-fn exec_line_len(msg: &str) -> usize {
-    if cfg!(windows) {
-        msg.len() + 2 // \r\n
-    } else {
-        msg.len() + 1 // \n
-    }
+/// Return the EXEC address string for a cross-platform echo command.
+/// Uses the `echo_helper` binary built from `tests/echo_helper.rs`,
+/// which copies stdin to stdout byte-for-byte on all platforms.
+fn exec_echo_addr() -> String {
+    let helper = env!("CARGO_BIN_EXE_echo_helper");
+    // Quote the path in case it contains spaces (e.g. on Windows CI)
+    format!("EXEC:\"{helper}\"")
 }
 
 /// Helper: generate a unique unix socket path for testing.
@@ -316,23 +289,21 @@ async fn tcp_listen_relay_via_parser() {
 #[tokio::test]
 async fn exec_echo_relay() {
     // Parse the EXEC factory — this creates a child process that acts as a pipe
-    let exec_factory = endpoint::parse_factory(exec_echo_addr()).unwrap();
+    let exec_factory = endpoint::parse_factory(&exec_echo_addr()).unwrap();
 
     // Connect — spawns the child process
     let mut exec_stream = exec_factory.connect().await.unwrap();
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // Write to the exec stream (cat's stdin)
-    let payload = exec_line("ExecTest");
-    exec_stream.write_all(&payload).await.unwrap();
+    // Write to the exec stream (echo_helper's stdin)
+    exec_stream.write_all(b"ExecTest").await.unwrap();
     exec_stream.flush().await.unwrap();
 
-    // Read back from exec stream (cat's stdout)
-    let expected_len = exec_line_len("ExecTest");
-    let mut buf = vec![0u8; expected_len];
+    // Read back from exec stream (echo_helper's stdout)
+    let mut buf = vec![0u8; 8];
     exec_stream.read_exact(&mut buf).await.unwrap();
-    assert_eq!(buf, payload);
+    assert_eq!(&buf, b"ExecTest");
 
     drop(exec_stream);
 }
@@ -345,7 +316,7 @@ async fn exec_as_strategy() {
     let echo_addr_str = format!("TCP:127.0.0.1:{}", echo_addr.port());
 
     // Parse EXEC as a strategy (address1)
-    let strategy = endpoint::parse_strategy(exec_echo_addr()).unwrap();
+    let strategy = endpoint::parse_strategy(&exec_echo_addr()).unwrap();
     let connector = match strategy {
         Strategy::Connect(c) => c,
         Strategy::Listen(_) => panic!("expected Connect strategy for EXEC"),
@@ -379,7 +350,7 @@ async fn exec_bidirectional_relay() {
     let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay_addr = relay_listener.local_addr().unwrap();
 
-    let exec_addr = exec_echo_addr().to_string();
+    let exec_addr = exec_echo_addr();
 
     tokio::spawn(async move {
         let (stream, _) = relay_listener.accept().await.unwrap();
@@ -397,19 +368,18 @@ async fn exec_bidirectional_relay() {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
 
-        // Send data — it should pass through cat and come back as-is
-        let payload = exec_line("Bidirectional");
-        client.write_all(&payload).unwrap();
+        // Send data — it should pass through echo_helper and come back as-is
+        client.write_all(b"Bidirectional").unwrap();
         client.flush().unwrap();
 
-        let mut buf = vec![0u8; payload.len()];
+        let mut buf = vec![0u8; 13];
         client.read_exact(&mut buf).unwrap();
         buf
     })
     .await
     .unwrap();
 
-    assert_eq!(result, exec_line("Bidirectional"));
+    assert_eq!(&result, b"Bidirectional");
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +428,7 @@ async fn stdio_tcp_binary() {
 }
 
 /// Tests STDIO ↔ EXEC relay via the binary, verifying bidirectional flow.
-/// Covers: winsocat STDIO EXEC:cat
+/// Covers: winsocat STDIO EXEC:echo_helper
 ///
 /// Note: `copy_bidirectional` keeps both halves open until both reach EOF.
 /// With STDIO, shutting down stdout doesn't make stdin return EOF, so the
@@ -467,12 +437,12 @@ async fn stdio_tcp_binary() {
 #[tokio::test]
 async fn stdio_exec_binary() {
     let binary = env!("CARGO_BIN_EXE_winsocat");
-    let payload = exec_line("StdioExec");
+    let exec_addr = exec_echo_addr();
 
     let result = tokio::task::spawn_blocking(move || {
         let mut child = std::process::Command::new(binary)
             .arg("STDIO")
-            .arg(exec_echo_addr())
+            .arg(&exec_addr)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -480,12 +450,12 @@ async fn stdio_exec_binary() {
             .expect("failed to spawn winsocat binary");
 
         let stdin = child.stdin.as_mut().unwrap();
-        stdin.write_all(&payload).unwrap();
+        stdin.write_all(b"StdioExec").unwrap();
         stdin.flush().unwrap();
 
-        // Read back the exact number of bytes we expect (cat echoes input)
+        // Read back the exact number of bytes we expect
         let stdout = child.stdout.as_mut().unwrap();
-        let mut buf = vec![0u8; payload.len()];
+        let mut buf = vec![0u8; 9];
         stdout.read_exact(&mut buf).unwrap();
 
         // Kill the child — the relay won't exit on its own because
@@ -498,7 +468,7 @@ async fn stdio_exec_binary() {
     .await
     .unwrap();
 
-    assert_eq!(result, exec_line("StdioExec"));
+    assert_eq!(&result, b"StdioExec");
 }
 
 // ---------------------------------------------------------------------------
