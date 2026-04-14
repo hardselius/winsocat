@@ -94,11 +94,7 @@ fn exec_echo_addr() -> String {
 /// Helper: generate a unique unix socket path for testing.
 #[cfg(unix)]
 fn temp_sock_path(label: &str) -> String {
-    format!(
-        "/tmp/winsocat_test_{}_{}.sock",
-        label,
-        std::process::id()
-    )
+    format!("/tmp/winsocat_test_{}_{}.sock", label, std::process::id())
 }
 
 /// Helper: spawn a Unix echo server, return the socket path.
@@ -832,7 +828,11 @@ async fn serial_port_relay() {
     //
     // On unix, use a path like /dev/ttyUSB0 or create a pty pair.
 
-    let port = if cfg!(windows) { "SP:COM5" } else { "SP:/dev/ttyUSB0" };
+    let port = if cfg!(windows) {
+        "SP:COM5"
+    } else {
+        "SP:/dev/ttyUSB0"
+    };
     let strategy = endpoint::parse_strategy(port);
     // Just verify parsing works — actual connection requires hardware
     assert!(strategy.is_ok(), "failed to parse serial port address");
