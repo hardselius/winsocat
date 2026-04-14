@@ -1,4 +1,4 @@
-# WinSocat [![Testing][ci-badge]][ci] [![Release][release-badge]][release]
+# winsocat [![Testing][ci-badge]][ci] [![Release][release-badge]][release]
 
 [ci]: https://github.com/hardselius/winsocat/actions/workflows/unit-test.yml
 [ci-badge]: https://github.com/hardselius/winsocat/actions/workflows/unit-test.yml/badge.svg
@@ -18,11 +18,78 @@ WinSocat is a socat-like program specific on Windows platform. It can bridge Win
 cargo install --path .
 ```
 
-### Windows Package Manager
-Install via `winget`
+## Quick Start
+
+These examples work on any platform (macOS, Linux, Windows). You just need two terminal windows.
+
+### Chat between two terminals
+
+Start a listener in one terminal, connect from the other, and type messages back and forth:
+
 ```
-winget install -e --id Firejox.WinSocat
+# Terminal 1: listen for incoming connections
+winsocat TCP-LISTEN:127.0.0.1:8000 STDIO
+
+# Terminal 2: connect to the listener
+winsocat STDIO TCP:127.0.0.1:8000
 ```
+
+Anything you type in either terminal appears in the other.
+
+### Connect to an existing server
+
+If something is already listening (e.g. netcat), connect to it:
+
+```
+# Terminal 1: start a listener with netcat
+nc -l 8000
+
+# Terminal 2: connect with winsocat
+winsocat STDIO TCP:127.0.0.1:8000
+```
+
+> **Note:** If nothing is listening, you'll get `Connection refused`. Start the listener first.
+
+### Pipe a command's output over TCP
+
+Use `EXEC` to run a command and relay its stdin/stdout over the network:
+
+```
+# Terminal 1: serve a directory listing to anyone who connects
+winsocat TCP-LISTEN:127.0.0.1:9000 EXEC:ls
+
+# Terminal 2: connect and see the output
+winsocat STDIO TCP:127.0.0.1:9000
+```
+
+On Windows, use `EXEC:dir` instead of `EXEC:ls`.
+
+### TCP port forwarding
+
+Forward a local port to a remote service:
+
+```
+winsocat TCP-LISTEN:127.0.0.1:8080 TCP:example.com:80
+```
+
+Now connecting to `localhost:8080` reaches `example.com:80`.
+
+### Unix socket to TCP relay (macOS/Linux)
+
+Bridge a Unix domain socket and a TCP port:
+
+```
+# Terminal 1: listen on a TCP port
+nc -l 8000
+
+# Terminal 2: relay from a Unix socket to TCP
+winsocat UNIX-LISTEN:/tmp/test.sock TCP:127.0.0.1:8000
+
+# Terminal 3: connect to the Unix socket
+socat - UNIX-CONNECT:/tmp/test.sock
+```
+
+Text typed in Terminal 3 appears in Terminal 1, and vice versa.
 
 ## Command Form
 
@@ -55,7 +122,7 @@ winsocat NPIPE:RemoteServer:RemotePipe STDIO
 
 * It can create reverse shell.
 ```
-winsocat EXEC:C:\Windows\syetem32\cmd.exe TCP:127.0.0.1:8000
+winsocat EXEC:C:\Windows\system32\cmd.exe TCP:127.0.0.1:8000
 ```
 
 * It can bridge Windows named pipe and [unix socket on Windows](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/)
