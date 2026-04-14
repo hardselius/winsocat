@@ -14,7 +14,16 @@ Run a single test:
 cargo test test_name
 ```
 
-No linter or formatter config is enforced. `rustfmt` and `clippy` are available via the Nix dev shell but not mandated by CI.
+## Formatting & Linting
+
+Both are enforced by CI and must pass before tests run.
+
+```bash
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings -W clippy::all -W clippy::correctness -W clippy::complexity -W clippy::style -W clippy::suspicious -W clippy::perf
+```
+
+Run `cargo fmt` before committing. Run clippy frequently during development to catch issues early.
 
 ## Project Layout
 
@@ -35,7 +44,9 @@ src/
     hvsock.rs          # HVSOCK, HVSOCK-LISTEN [cfg(windows)]
     wsl.rs             # WSL (sugar over EXEC) [cfg(windows)]
 tests/
-  integration_tests.rs # TCP relay integration tests
+  integration_tests.rs # TCP, EXEC, UNIX, STDIO, multi-conn integration tests
+helpers/
+  echo_helper.rs       # Minimal stdin→stdout copier for EXEC tests
 ```
 
 The `flake.nix` / `rust-toolchain.toml` / `.envrc` provide a Nix dev shell.
