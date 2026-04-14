@@ -1,0 +1,43 @@
+name: Publish Executable on Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build_and_publish:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: winsocat-portable-x64
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            artifact: winsocat-portable-x86
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            artifact: winsocat-portable-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -acvf ../../../${{ matrix.artifact }}.zip winsocat.exe
+      - name: Upload to release assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./${{ matrix.artifact }}.zip
+          asset_name: ${{ matrix.artifact }}.zip
+          asset_content_type: application/zip
