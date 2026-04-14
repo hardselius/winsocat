@@ -14,17 +14,30 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint:
-    name: Lint
+  fmt:
+    name: Formatting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Run clippy
         run: >
           cargo clippy --all-targets --
@@ -37,7 +50,7 @@ jobs:
           -W clippy::perf
 
   test:
-    needs: lint
+    needs: [fmt, clippy]
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
