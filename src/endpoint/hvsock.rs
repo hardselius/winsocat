@@ -1,6 +1,3 @@
-use std::mem;
-use std::net::SocketAddr;
-
 use anyhow::Result;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use tokio::net::TcpStream;
@@ -59,10 +56,7 @@ fn parse_service_id(addr: &str) -> Option<uuid::Uuid> {
     {
         let port: u32 = port_str.parse().ok()?;
         // serviceId format for VSOCK: {port}-facb-11e6-bd58-64006a7986d3
-        let guid_str = format!(
-            "{:08x}-facb-11e6-bd58-64006a7986d3",
-            port
-        );
+        let guid_str = format!("{:08x}-facb-11e6-bd58-64006a7986d3", port);
         return uuid::Uuid::parse_str(&guid_str).ok();
     }
     uuid::Uuid::parse_str(addr).ok()
@@ -130,12 +124,7 @@ fn connect_hvsock(vm_id: &uuid::Uuid, service_id: &uuid::Uuid) -> Result<Socket>
     )?;
 
     let addr_buf = serialize_hvsock_addr(vm_id, service_id);
-    let addr = unsafe {
-        SockAddr::new(
-            *(addr_buf.as_ptr() as *const _),
-            SOCKADDR_HV_SIZE as u32,
-        )
-    };
+    let addr = unsafe { SockAddr::new(*(addr_buf.as_ptr() as *const _), SOCKADDR_HV_SIZE as _) };
     socket.connect(&addr)?;
     Ok(socket)
 }
@@ -148,12 +137,7 @@ fn bind_hvsock(vm_id: &uuid::Uuid, service_id: &uuid::Uuid) -> Result<Socket> {
     )?;
 
     let addr_buf = serialize_hvsock_addr(vm_id, service_id);
-    let addr = unsafe {
-        SockAddr::new(
-            *(addr_buf.as_ptr() as *const _),
-            SOCKADDR_HV_SIZE as u32,
-        )
-    };
+    let addr = unsafe { SockAddr::new(*(addr_buf.as_ptr() as *const _), SOCKADDR_HV_SIZE as _) };
     socket.bind(&addr)?;
     socket.listen(128)?;
     Ok(socket)
@@ -231,7 +215,8 @@ mod tests {
 
     #[test]
     fn parse_hvsock_stream() {
-        let input = "HVSOCK:0cb41c0b-fd26-4a41-8370-dccb048e216e:00000ac9-facb-11e6-bd58-64006a7986d3";
+        let input =
+            "HVSOCK:0cb41c0b-fd26-4a41-8370-dccb048e216e:00000ac9-facb-11e6-bd58-64006a7986d3";
         let elem = AddressElement::try_parse(input).unwrap();
         let config = try_parse_hvsock_stream(&elem).unwrap();
         assert_eq!(

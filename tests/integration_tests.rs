@@ -55,9 +55,7 @@ async fn tcp_echo_relay() {
     let echo_addr = spawn_echo_server();
 
     // Bind our relay listener with tokio directly
-    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay_addr = relay_listener.local_addr().unwrap();
 
     let echo_addr_str = format!("TCP:127.0.0.1:{}", echo_addr.port());
@@ -98,9 +96,7 @@ async fn tcp_bidirectional_relay() {
     // Server sends "Bar", expects to receive "Foo"
     let (server_addr, received) = spawn_send_recv_server("Bar");
 
-    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let relay_addr = relay_listener.local_addr().unwrap();
     let server_addr_str = format!("TCP:127.0.0.1:{}", server_addr.port());
 

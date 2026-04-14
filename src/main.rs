@@ -34,23 +34,21 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let mut dst = factory.connect().await?;
             relay::relay(&mut *src, &mut *dst).await?;
         }
-        Strategy::Listen(mut listener) => {
-            loop {
-                let mut src = listener.accept().await?;
-                let factory = Arc::clone(&factory);
+        Strategy::Listen(mut listener) => loop {
+            let mut src = listener.accept().await?;
+            let factory = Arc::clone(&factory);
 
-                tokio::spawn(async move {
-                    match factory.connect().await {
-                        Ok(mut dst) => {
-                            let _ = relay::relay(&mut *src, &mut *dst).await;
-                        }
-                        Err(e) => {
-                            eprintln!("factory connect error: {e}");
-                        }
+            tokio::spawn(async move {
+                match factory.connect().await {
+                    Ok(mut dst) => {
+                        let _ = relay::relay(&mut *src, &mut *dst).await;
                     }
-                });
-            }
-        }
+                    Err(e) => {
+                        eprintln!("factory connect error: {e}");
+                    }
+                }
+            });
+        },
     }
 
     Ok(())

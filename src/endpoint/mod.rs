@@ -1,13 +1,14 @@
+pub mod exec;
+pub mod serial;
 pub mod stdio;
 pub mod tcp;
-pub mod exec;
+#[cfg(unix)]
 pub mod unix;
-pub mod serial;
 
 #[cfg(windows)]
-pub mod npipe;
-#[cfg(windows)]
 pub mod hvsock;
+#[cfg(windows)]
+pub mod npipe;
 #[cfg(windows)]
 pub mod wsl;
 
@@ -81,9 +82,11 @@ pub fn parse_strategy(input: &str) -> Result<Strategy> {
             return Ok(Strategy::Connect(Box::new(s)));
         }
     }
+    #[cfg(unix)]
     if let Some(s) = unix::try_parse_connect_strategy(&elem) {
         return Ok(Strategy::Connect(Box::new(s)));
     }
+    #[cfg(unix)]
     if let Some(s) = unix::try_parse_listen_strategy(&elem) {
         return Ok(Strategy::Listen(Box::new(s)));
     }
@@ -126,6 +129,7 @@ pub fn parse_factory(input: &str) -> Result<Factory> {
             return Ok(Factory::new(Box::new(f)));
         }
     }
+    #[cfg(unix)]
     if let Some(f) = unix::try_parse_factory(&elem) {
         return Ok(Factory::new(Box::new(f)));
     }
