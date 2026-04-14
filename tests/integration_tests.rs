@@ -84,12 +84,37 @@ fn spawn_send_recv_server(
 
 /// Return the EXEC address string for a safe echo-like command on the current platform.
 /// On unix: `EXEC:cat`  (copies stdin → stdout)
-/// On windows: `EXEC:findstr .*`  (copies stdin → stdout, matching all lines)
+/// On windows: `EXEC:findstr "^"`  (copies stdin → stdout, matching all lines)
+///
+/// Note: `findstr` on Windows is line-buffered with `\r\n` terminators.
+/// Tests using this must send lines ending with `\r\n` (see `exec_line()`).
 fn exec_echo_addr() -> &'static str {
     if cfg!(windows) {
-        "EXEC:findstr .*"
+        r#"EXEC:findstr "^""#
     } else {
         "EXEC:cat"
+    }
+}
+
+/// Return test payload with platform-appropriate line endings.
+/// On Windows, `findstr` requires `\r\n` to recognize a line boundary
+/// and flush output. On unix, `cat` works with plain `\n`.
+fn exec_line(msg: &str) -> Vec<u8> {
+    if cfg!(windows) {
+        format!("{msg}\r\n").into_bytes()
+    } else {
+        format!("{msg}\n").into_bytes()
+    }
+}
+
+/// Expected output length from the echo command for a given message.
+/// `findstr` on Windows echoes the line including `\r\n`;
+/// `cat` on unix echoes including `\n`.
+fn exec_line_len(msg: &str) -> usize {
+    if cfg!(windows) {
+        msg.len() + 2 // \r\n
+    } else {
+        msg.len() + 1 // \n
     }
 }
 
@@ -299,13 +324,15 @@ async fn exec_echo_relay() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // Write to the exec stream (cat's stdin)
-    exec_stream.write_all(b"ExecTest\n").await.unwrap();
+    let payload = exec_line("ExecTest");
+    exec_stream.write_all(&payload).await.unwrap();
     exec_stream.flush().await.unwrap();
 
     // Read back from exec stream (cat's stdout)
-    let mut buf = vec![0u8; 9];
+    let expected_len = exec_line_len("ExecTest");
+    let mut buf = vec![0u8; expected_len];
     exec_stream.read_exact(&mut buf).await.unwrap();
-    assert_eq!(&buf, b"ExecTest\n");
+    assert_eq!(buf, payload);
 
     drop(exec_stream);
 }
@@ -371,17 +398,18 @@ async fn exec_bidirectional_relay() {
             .unwrap();
 
         // Send data — it should pass through cat and come back as-is
-        client.write_all(b"Bidirectional\n").unwrap();
+        let payload = exec_line("Bidirectional");
+        client.write_all(&payload).unwrap();
         client.flush().unwrap();
 
-        let mut buf = [0u8; 14];
+        let mut buf = vec![0u8; payload.len()];
         client.read_exact(&mut buf).unwrap();
         buf
     })
     .await
     .unwrap();
 
-    assert_eq!(&result, b"Bidirectional\n");
+    assert_eq!(result, exec_line("Bidirectional"));
 }
 
 // ---------------------------------------------------------------------------
@@ -439,15 +467,12 @@ async fn stdio_tcp_binary() {
 #[tokio::test]
 async fn stdio_exec_binary() {
     let binary = env!("CARGO_BIN_EXE_winsocat");
+    let payload = exec_line("StdioExec");
 
     let result = tokio::task::spawn_blocking(move || {
         let mut child = std::process::Command::new(binary)
             .arg("STDIO")
-            .arg(if cfg!(windows) {
-                "EXEC:findstr .*"
-            } else {
-                "EXEC:cat"
-            })
+            .arg(exec_echo_addr())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -455,12 +480,12 @@ async fn stdio_exec_binary() {
             .expect("failed to spawn winsocat binary");
 
         let stdin = child.stdin.as_mut().unwrap();
-        stdin.write_all(b"StdioExec\n").unwrap();
+        stdin.write_all(&payload).unwrap();
         stdin.flush().unwrap();
 
         // Read back the exact number of bytes we expect (cat echoes input)
         let stdout = child.stdout.as_mut().unwrap();
-        let mut buf = [0u8; 10];
+        let mut buf = vec![0u8; payload.len()];
         stdout.read_exact(&mut buf).unwrap();
 
         // Kill the child — the relay won't exit on its own because
@@ -473,7 +498,7 @@ async fn stdio_exec_binary() {
     .await
     .unwrap();
 
-    assert_eq!(&result, b"StdioExec\n");
+    assert_eq!(result, exec_line("StdioExec"));
 }
 
 // ---------------------------------------------------------------------------
