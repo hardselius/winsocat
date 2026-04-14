@@ -1,9 +1,11 @@
 # WinSocat [![Testing][ci-badge]][ci] [![Release][release-badge]][release]
 
-[ci]: https://github.com/firejox/WinSocat/actions/workflows/unit-test.yml
-[ci-badge]: https://github.com/firejox/WinSocat/actions/workflows/unit-test.yml/badge.svg
-[release]: https://github.com/firejox/WinSocat/releases
-[release-badge]: https://img.shields.io/github/v/release/firejox/WinSocat?include_prereleases
+[ci]: https://github.com/hardselius/winsocat/actions/workflows/unit-test.yml
+[ci-badge]: https://github.com/hardselius/winsocat/actions/workflows/unit-test.yml/badge.svg
+[release]: https://github.com/hardselius/winsocat/releases
+[release-badge]: https://img.shields.io/github/v/release/hardselius/winsocat?include_prereleases
+
+> **Note:** This is an experimental, AI-assisted rewrite of [firejox/WinSocat](https://github.com/firejox/WinSocat) in Rust. The original project is a .NET/C# application. This rewrite aims for CLI compatibility with the original while targeting cross-platform support. It is not production-ready.
 
 WinSocat is a socat-like program specific on Windows platform. It can bridge Windows named pipe and other general I/O, e.g., STDIO, TCP, the STDIO of Process.
 
