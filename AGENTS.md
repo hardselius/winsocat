@@ -55,6 +55,7 @@ crates/
         npipe.rs             # NPIPE, NPIPE-LISTEN  [cfg(windows)]
         hvsock.rs            # HVSOCK, HVSOCK-LISTEN [cfg(windows)]
         wsl.rs               # WSL (sugar over EXEC) [cfg(windows)]
+        smb_pipe.rs          # SMB-PIPE (remote pipe via smb2-pipe crate)
     tests/
       integration_tests.rs   # TCP, EXEC, UNIX, STDIO, multi-conn integration tests
     helpers/
@@ -62,7 +63,26 @@ crates/
   smb2-pipe/                 # Minimal SMB2 client for remote named pipe access
     Cargo.toml
     src/
-      lib.rs                 # library root (skeleton)
+      lib.rs                 # library root
+      auth.rs                # Auth enum (Ntlm, Anonymous)
+      ntlm.rs                # NTLM token generation via ntlmclient
+      transport.rs           # async send/recv with NetBIOS framing
+      session.rs             # connection orchestration (negotiate → create)
+      client.rs              # SmbPipeClient (AsyncRead+AsyncWrite via DuplexStream)
+      protocol/
+        mod.rs               # framing, status codes, encode/decode helpers
+        header.rs            # 64-byte SMB2 header
+        negotiate.rs         # Negotiate request/response
+        session_setup.rs     # Session Setup request/response
+        tree_connect.rs      # Tree Connect request/response
+        create.rs            # Create request/response, FileId
+        read.rs              # Read request/response
+        write.rs             # Write request/response
+        close.rs             # Close request/response
+        tree_disconnect.rs   # Tree Disconnect request/response
+        logoff.rs            # Logoff request/response
+    tests/
+      integration_tests.rs   # Mock SMB2 server + client echo tests
 ```
 
 The `flake.nix` / `rust-toolchain.toml` / `.envrc` provide a Nix dev shell.
@@ -105,8 +125,10 @@ Parsed by `AddressElement::try_parse`. Supports quoted values in the address por
 - **tokio-serial** — serial port support (cross-platform)
 - **async-trait** — async methods in traits
 - **anyhow** — error handling
+- **smb2-pipe** — SMB2 named pipe client (workspace crate)
 - **socket2 + uuid** (Windows only) — raw Hyper-V socket support
 
 ### smb2-pipe
-- **tokio** (net, io-util) — async TCP and I/O utilities
+- **tokio** (net, io-util, sync, rt) — async TCP, I/O, channels, and runtime
 - **anyhow** — error handling
+- **ntlmclient** — NTLM token generation

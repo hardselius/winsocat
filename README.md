@@ -99,9 +99,9 @@ The WinSocat is accept two address pattern
 winsocat.exe [address1] [address2]
 ```
 
-The `address1` can accept `STDIO`, `TCP-LISTEN`, `TCP`, `NPIPE`, `NPIPE-LISTEN`, `EXEC`, `WSL`, `UNIX`, `UNIX-LISTEN`, `HVSOCK`, `HVSOCK-LISTEN`, `SP` socket types.
+The `address1` can accept `STDIO`, `TCP-LISTEN`, `TCP`, `NPIPE`, `NPIPE-LISTEN`, `EXEC`, `WSL`, `UNIX`, `UNIX-LISTEN`, `HVSOCK`, `HVSOCK-LISTEN`, `SP`, `SMB-PIPE` socket types.
 
-The `address2` can accept `STDIO`, `TCP`, `NPIPE`, `EXEC`, `WSL`, `UNIX`, `HVSOCK`, `SP` socket types.
+The `address2` can accept `STDIO`, `TCP`, `NPIPE`, `EXEC`, `WSL`, `UNIX`, `HVSOCK`, `SP`, `SMB-PIPE` socket types.
 
 ## Examples
 
@@ -172,6 +172,27 @@ winsocat stdio hvsock:0cb41c0b-fd26-4a41-8370-dccb048e216e:vsock-2761
 ```
 
 This `vsock-2761` will be viewed as the serviceId `00000ac9-facb-11e6-bd58-64006a7986d3`.
+
+### SMB-PIPE Support
+
+WinSocat can connect to remote Windows named pipes via SMB2, without needing a Windows client. This works on all platforms.
+
+```
+winsocat TCP-LISTEN:8080 SMB-PIPE:fileserver:mypipe,user=admin,password=secret,domain=CORP
+```
+
+This forwards TCP connections on port 8080 to the named pipe `mypipe` on `fileserver` using NTLM authentication.
+
+Options:
+- `user` — NTLM username (omit for anonymous access)
+- `password` — password (supports `$ENV_VAR` references for security)
+- `domain` — NTLM domain (default: `.`)
+- `port` — TCP port for SMB2 (default: 445)
+
+Example with environment variable for the password:
+```
+winsocat STDIO SMB-PIPE:server:pipe,user=admin,password=$SMB_PASSWORD
+```
 
 ### Serial Port Support
 
