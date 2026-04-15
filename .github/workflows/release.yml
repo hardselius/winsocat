@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the release version from the tag
+        if: env.VERSION == ''
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_ENV
+      - name: Show the version
+        run: |
+          echo "version is: $VERSION"
+      - name: Check that tag version and Cargo.toml version are the same
+        shell: bash
+        run: |
+          if ! grep -q "^version = \"$VERSION\"" crates/winsocat/Cargo.toml; then
+            echo "tag version ($VERSION) does not match crates/winsocat/Cargo.toml" >&2
+            exit 1
+          fi
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create $GITHUB_REF_NAME --draft --verify-tag --title $GITHUB_REF_NAME
+    outputs:
+      version: ${{ env.VERSION }}
+
+  build-release:
+    name: build-release (${{ matrix.target }})
+    needs: [create-release]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUST_BACKTRACE: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - build: macos-x86
+            os: macos-13
+            target: x86_64-apple-darwin
+          - build: macos-arm
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - build: windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          cargo build --release --package winsocat --target ${{ matrix.target }}
+          if [[ "${{ matrix.os }}" == windows-* ]]; then
+            bin="target/${{ matrix.target }}/release/winsocat.exe"
+          else
+            bin="target/${{ matrix.target }}/release/winsocat"
+          fi
+          echo "BIN=$bin" >> $GITHUB_ENV
+
+      - name: Strip release binary
+        if: "!startsWith(matrix.os, 'windows')"
+        shell: bash
+        run: strip "$BIN"
+
+      - name: Determine archive name
+        shell: bash
+        run: |
+          version="${{ needs.create-release.outputs.version }}"
+          echo "ARCHIVE=winsocat-$version-${{ matrix.target }}" >> $GITHUB_ENV
+
+      - name: Build archive directory
+        shell: bash
+        run: |
+          mkdir -p "$ARCHIVE"
+          cp "$BIN" "$ARCHIVE"/
+          cp README.md LICENSE "$ARCHIVE"/
+
+      - name: Build archive (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: bash
+        run: |
+          7z a "$ARCHIVE.zip" "$ARCHIVE"
+          certutil -hashfile "$ARCHIVE.zip" SHA256 > "$ARCHIVE.zip.sha256"
+          echo "ASSET=$ARCHIVE.zip" >> $GITHUB_ENV
+          echo "ASSET_SUM=$ARCHIVE.zip.sha256" >> $GITHUB_ENV
+
+      - name: Build archive (Unix)
+        if: "!startsWith(matrix.os, 'windows')"
+        shell: bash
+        run: |
+          tar czf "$ARCHIVE.tar.gz" "$ARCHIVE"
+          shasum -a 256 "$ARCHIVE.tar.gz" > "$ARCHIVE.tar.gz.sha256"
+          echo "ASSET=$ARCHIVE.tar.gz" >> $GITHUB_ENV
+          echo "ASSET_SUM=$ARCHIVE.tar.gz.sha256" >> $GITHUB_ENV
+
+      - name: Upload release archive
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          version="${{ needs.create-release.outputs.version }}"
+          gh release upload "v$version" ${{ env.ASSET }} ${{ env.ASSET_SUM }}
