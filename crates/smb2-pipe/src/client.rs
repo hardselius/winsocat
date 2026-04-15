@@ -1,35 +1,34 @@
 //! High-level async pipe client implementing `AsyncRead + AsyncWrite`.
 //!
 //! `SmbPipeClient` wraps an SMB2 [`Session`] and exposes the remote named
-//! pipe as a standard Tokio async stream. A single background task
-//! serializes all SMB2 READ and WRITE operations on the TCP connection.
+//! pipe as a standard Tokio async stream.
+//!
+//! The design splits the TCP connection into read/write halves and uses
+//! a response dispatcher to match SMB2 responses to their requests by
+//! message ID. This allows READ and WRITE operations to be in-flight
+//! concurrently, which is essential for named pipes where READ may block
+//! on the server until data is available.
 
+use std::collections::HashMap;
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
-use tokio::sync::mpsc;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::auth::Auth;
 use crate::protocol::create::FileId;
-use crate::protocol::{self, Smb2Command, Smb2Header, STATUS_BUFFER_OVERFLOW, STATUS_SUCCESS};
+use crate::protocol::{
+    self, Smb2Command, Smb2Header, Smb2Response, STATUS_BUFFER_OVERFLOW, STATUS_SUCCESS,
+};
 use crate::session::Session;
-use crate::transport;
 
 /// Default read buffer size.
 const DEFAULT_READ_SIZE: u32 = 65536;
-
-/// Internal command sent to the background SMB2 worker task.
-enum SmbOp {
-    Read {
-        reply: tokio::sync::oneshot::Sender<io::Result<Vec<u8>>>,
-    },
-    Write {
-        data: Vec<u8>,
-        reply: tokio::sync::oneshot::Sender<io::Result<usize>>,
-    },
-}
 
 /// A connected SMB2 named pipe that implements `AsyncRead + AsyncWrite`
 /// via the returned `DuplexStream`.
@@ -37,15 +36,25 @@ enum SmbOp {
 /// The `stream` field is the end you read/write. Background tasks handle
 /// translating those reads/writes into SMB2 protocol messages.
 pub struct SmbPipeClient {
-    /// The caller's end of the duplex stream — implements `AsyncRead + AsyncWrite`.
+    /// The caller's end of the duplex stream.
     pub stream: DuplexStream,
     /// Handle to the background reader task.
     _reader_task: JoinHandle<()>,
     /// Handle to the background writer task.
     _writer_task: JoinHandle<()>,
-    /// Handle to the SMB2 worker task.
-    _worker_task: JoinHandle<()>,
+    /// Handle to the response dispatcher task.
+    _dispatcher_task: JoinHandle<()>,
+    /// Handle to the teardown task.
+    _teardown_task: JoinHandle<()>,
 }
+
+/// Shared state for sending SMB2 requests on the TCP write half.
+struct Sender {
+    tcp_write: OwnedWriteHalf,
+}
+
+/// Pending response table: message_id → oneshot sender.
+type PendingMap = HashMap<u64, oneshot::Sender<io::Result<Smb2Response>>>;
 
 impl SmbPipeClient {
     /// Connect to a remote named pipe via SMB2 and return an async stream.
@@ -62,65 +71,68 @@ impl SmbPipeClient {
         let session_id = session.session_id;
         let tree_id = session.tree_id;
         let file_id = session.file_id;
-        let message_id = session.message_id;
-        let tcp_stream = session.stream;
+        let start_message_id = session.message_id;
 
-        // Channel for sending operations to the worker
-        let (op_tx, mut op_rx) = mpsc::channel::<SmbOp>(16);
+        // Split TCP into read/write halves
+        let (tcp_read, tcp_write) = session.stream.into_split();
+
+        // Monotonically increasing message ID
+        let message_id = Arc::new(AtomicU64::new(start_message_id));
+
+        // Shared sender (TCP write half)
+        let sender = Arc::new(Mutex::new(Sender { tcp_write }));
+
+        // Pending response table
+        let pending: Arc<Mutex<PendingMap>> = Arc::new(Mutex::new(HashMap::new()));
 
         // Duplex channel: caller ↔ background reader/writer tasks
         let (caller_stream, bg_stream) = tokio::io::duplex(DEFAULT_READ_SIZE as usize);
         let (mut bg_read, mut bg_write) = tokio::io::split(bg_stream);
 
-        // Worker task: owns the TCP stream, serializes all SMB2 ops
-        let worker_task = tokio::spawn(async move {
-            let mut stream = tcp_stream;
-            let mut mid = message_id;
+        // Channel to signal teardown
+        let (teardown_tx, teardown_rx) = oneshot::channel::<()>();
 
-            while let Some(op) = op_rx.recv().await {
-                match op {
-                    SmbOp::Read { reply } => {
-                        let result =
-                            smb2_read(&mut stream, mid, session_id, tree_id, &file_id, max_read)
-                                .await;
-                        mid += 1;
-                        let _ = reply.send(result);
-                    }
-                    SmbOp::Write { data, reply } => {
-                        let result =
-                            smb2_write(&mut stream, mid, session_id, tree_id, &file_id, &data)
-                                .await;
-                        mid += 1;
-                        let _ = reply.send(result);
-                    }
-                }
-            }
-
-            // Channel closed — perform teardown
-            let _ = smb2_close_session(&mut stream, &mut mid, session_id, tree_id, &file_id).await;
+        // Dispatcher task: reads from TCP, routes responses by message ID
+        let disp_pending = Arc::clone(&pending);
+        let dispatcher_task = tokio::spawn(async move {
+            dispatch_responses(tcp_read, disp_pending).await;
         });
 
-        // Reader task: issues SMB2 READs, feeds data to caller
-        let read_tx = op_tx.clone();
+        // Reader task: issues SMB2 READs, feeds data to the duplex stream
+        let read_sender = Arc::clone(&sender);
+        let read_pending = Arc::clone(&pending);
+        let read_mid = Arc::clone(&message_id);
+        let read_file_id = file_id;
         let reader_task = tokio::spawn(async move {
             loop {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                if read_tx.send(SmbOp::Read { reply: tx }).await.is_err() {
-                    break;
-                }
-                match rx.await {
-                    Ok(Ok(data)) if data.is_empty() => break, // EOF
-                    Ok(Ok(data)) => {
+                let result = send_smb2_read(
+                    &read_sender,
+                    &read_pending,
+                    &read_mid,
+                    session_id,
+                    tree_id,
+                    &read_file_id,
+                    max_read,
+                )
+                .await;
+
+                match result {
+                    Ok(data) if data.is_empty() => break, // EOF
+                    Ok(data) => {
                         if bg_write.write_all(&data).await.is_err() {
-                            break; // caller dropped
+                            break; // Caller dropped
                         }
                     }
-                    _ => break,
+                    Err(_) => break,
                 }
             }
         });
 
         // Writer task: reads from caller, issues SMB2 WRITEs
+        let write_sender = Arc::clone(&sender);
+        let write_pending = Arc::clone(&pending);
+        let write_mid = Arc::clone(&message_id);
+        let write_file_id = file_id;
         let writer_task = tokio::spawn(async move {
             let mut buf = vec![0u8; max_write as usize];
             loop {
@@ -129,56 +141,161 @@ impl SmbPipeClient {
                     Ok(n) => n,
                     Err(_) => break,
                 };
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                if op_tx
-                    .send(SmbOp::Write {
-                        data: buf[..n].to_vec(),
-                        reply: tx,
-                    })
-                    .await
-                    .is_err()
-                {
+                let result = send_smb2_write(
+                    &write_sender,
+                    &write_pending,
+                    &write_mid,
+                    session_id,
+                    tree_id,
+                    &write_file_id,
+                    &buf[..n],
+                )
+                .await;
+                if result.is_err() {
                     break;
                 }
-                match rx.await {
-                    Ok(Ok(_)) => {}
-                    _ => break,
-                }
             }
+            // Signal that writing is done, trigger teardown
+            let _ = teardown_tx.send(());
+        });
+
+        // Teardown task: waits for writer to finish, then cleans up
+        let teardown_sender = Arc::clone(&sender);
+        let teardown_mid = Arc::clone(&message_id);
+        let teardown_file_id = file_id;
+        let teardown_task = tokio::spawn(async move {
+            // Wait for the writer task to signal completion
+            let _ = teardown_rx.await;
+            // Give a small delay for pending reads to complete
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // Perform graceful close
+            let _ = send_smb2_close_session(
+                &teardown_sender,
+                &teardown_mid,
+                session_id,
+                tree_id,
+                &teardown_file_id,
+            )
+            .await;
         });
 
         Ok(Self {
             stream: caller_stream,
             _reader_task: reader_task,
             _writer_task: writer_task,
-            _worker_task: worker_task,
+            _dispatcher_task: dispatcher_task,
+            _teardown_task: teardown_task,
         })
     }
 }
 
-// ── SMB2 operations ─────────────────────────────────────────────────────
+// ── Response dispatcher ─────────────────────────────────────────────────
 
-async fn smb2_read(
-    stream: &mut tokio::net::TcpStream,
-    message_id: u64,
+async fn dispatch_responses(mut tcp_read: OwnedReadHalf, pending: Arc<Mutex<PendingMap>>) {
+    loop {
+        // Read NetBIOS header
+        let mut nb_hdr = [0u8; 4];
+        if tcp_read.read_exact(&mut nb_hdr).await.is_err() {
+            break; // Connection closed
+        }
+        let payload_len = protocol::decode_nb_header(&nb_hdr);
+        if payload_len < protocol::SMB2_HEADER_SIZE {
+            break;
+        }
+
+        let mut payload = vec![0u8; payload_len];
+        if tcp_read.read_exact(&mut payload).await.is_err() {
+            break;
+        }
+
+        let resp = match protocol::decode_message(&payload) {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+
+        let mid = resp.header.message_id;
+
+        // Route to the waiting task
+        let sender = {
+            let mut map = pending.lock().await;
+            map.remove(&mid)
+        };
+
+        if let Some(tx) = sender {
+            let _ = tx.send(Ok(resp));
+        }
+    }
+
+    // Connection closed — fail all pending requests
+    let mut map = pending.lock().await;
+    for (_, tx) in map.drain() {
+        let _ = tx.send(Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "SMB2 connection closed",
+        )));
+    }
+}
+
+// ── Request senders ─────────────────────────────────────────────────────
+
+/// Send an SMB2 request and register a pending response slot.
+///
+/// Returns a oneshot receiver that will receive the response.
+async fn send_request(
+    sender: &Arc<Mutex<Sender>>,
+    pending: &Arc<Mutex<PendingMap>>,
+    message_id: &Arc<AtomicU64>,
+    hdr: &mut Smb2Header,
+    body: &[u8],
+) -> io::Result<oneshot::Receiver<io::Result<Smb2Response>>> {
+    let mid = message_id.fetch_add(1, Ordering::SeqCst);
+    hdr.message_id = mid;
+
+    let (tx, rx) = oneshot::channel();
+
+    // Register the pending response before sending
+    {
+        let mut map = pending.lock().await;
+        map.insert(mid, tx);
+    }
+
+    // Send the request
+    {
+        let mut s = sender.lock().await;
+        let mut buf = Vec::with_capacity(4 + protocol::SMB2_HEADER_SIZE + body.len());
+        protocol::encode_message(hdr, body, &mut buf);
+        if let Err(e) = s.tcp_write.write_all(&buf).await {
+            // Remove from pending on send failure
+            let mut map = pending.lock().await;
+            map.remove(&mid);
+            return Err(e);
+        }
+        let _ = s.tcp_write.flush().await;
+    }
+
+    Ok(rx)
+}
+
+async fn send_smb2_read(
+    sender: &Arc<Mutex<Sender>>,
+    pending: &Arc<Mutex<PendingMap>>,
+    message_id: &Arc<AtomicU64>,
     session_id: u64,
     tree_id: u32,
     file_id: &FileId,
     max_read_size: u32,
 ) -> io::Result<Vec<u8>> {
-    let mut hdr = Smb2Header::new_request(Smb2Command::Read, message_id);
+    let mut hdr = Smb2Header::new_request(Smb2Command::Read, 0);
     hdr.session_id = session_id;
     hdr.tree_id = tree_id;
 
     let body = protocol::read::encode_read_request(file_id, max_read_size, 0);
 
-    transport::send_message(stream, &hdr, &body)
-        .await
-        .map_err(io::Error::other)?;
+    let rx = send_request(sender, pending, message_id, &mut hdr, &body).await?;
 
-    let resp = transport::recv_message(stream)
+    let resp = rx
         .await
-        .map_err(io::Error::other)?;
+        .map_err(|_| io::Error::other("response channel closed"))??;
 
     if resp.header.status != STATUS_SUCCESS && resp.header.status != STATUS_BUFFER_OVERFLOW {
         if resp.header.status == protocol::STATUS_PIPE_DISCONNECTED
@@ -200,27 +317,26 @@ async fn smb2_read(
     Ok(read_resp.data)
 }
 
-async fn smb2_write(
-    stream: &mut tokio::net::TcpStream,
-    message_id: u64,
+async fn send_smb2_write(
+    sender: &Arc<Mutex<Sender>>,
+    pending: &Arc<Mutex<PendingMap>>,
+    message_id: &Arc<AtomicU64>,
     session_id: u64,
     tree_id: u32,
     file_id: &FileId,
     data: &[u8],
 ) -> io::Result<usize> {
-    let mut hdr = Smb2Header::new_request(Smb2Command::Write, message_id);
+    let mut hdr = Smb2Header::new_request(Smb2Command::Write, 0);
     hdr.session_id = session_id;
     hdr.tree_id = tree_id;
 
     let body = protocol::write::encode_write_request(file_id, data, 0);
 
-    transport::send_message(stream, &hdr, &body)
-        .await
-        .map_err(io::Error::other)?;
+    let rx = send_request(sender, pending, message_id, &mut hdr, &body).await?;
 
-    let resp = transport::recv_message(stream)
+    let resp = rx
         .await
-        .map_err(io::Error::other)?;
+        .map_err(|_| io::Error::other("response channel closed"))??;
 
     if resp.header.status != STATUS_SUCCESS {
         return Err(io::Error::other(format!(
@@ -235,38 +351,49 @@ async fn smb2_write(
     Ok(write_resp.count as usize)
 }
 
-async fn smb2_close_session(
-    stream: &mut tokio::net::TcpStream,
-    message_id: &mut u64,
+/// Send close, tree disconnect, and logoff (best-effort).
+async fn send_smb2_close_session(
+    sender: &Arc<Mutex<Sender>>,
+    message_id: &Arc<AtomicU64>,
     session_id: u64,
     tree_id: u32,
     file_id: &FileId,
 ) -> io::Result<()> {
-    // Close pipe handle
-    let mut hdr = Smb2Header::new_request(Smb2Command::Close, *message_id);
+    // We send these without waiting for responses (best-effort teardown).
+    // This avoids deadlocks if the dispatcher has already stopped.
+
+    let mut s = sender.lock().await;
+
+    // Close
+    let mid = message_id.fetch_add(1, Ordering::SeqCst);
+    let mut hdr = Smb2Header::new_request(Smb2Command::Close, mid);
     hdr.session_id = session_id;
     hdr.tree_id = tree_id;
-    *message_id += 1;
     let body = protocol::close::encode_close_request(file_id);
-    let _ = transport::send_message(stream, &hdr, &body).await;
-    let _ = transport::recv_message(stream).await;
+    let mut buf = Vec::new();
+    protocol::encode_message(&hdr, &body, &mut buf);
+    let _ = s.tcp_write.write_all(&buf).await;
 
     // Tree disconnect
-    let mut hdr = Smb2Header::new_request(Smb2Command::TreeDisconnect, *message_id);
+    let mid = message_id.fetch_add(1, Ordering::SeqCst);
+    let mut hdr = Smb2Header::new_request(Smb2Command::TreeDisconnect, mid);
     hdr.session_id = session_id;
     hdr.tree_id = tree_id;
-    *message_id += 1;
     let body = protocol::tree_disconnect::encode_tree_disconnect_request();
-    let _ = transport::send_message(stream, &hdr, &body).await;
-    let _ = transport::recv_message(stream).await;
+    buf.clear();
+    protocol::encode_message(&hdr, &body, &mut buf);
+    let _ = s.tcp_write.write_all(&buf).await;
 
     // Logoff
-    let mut hdr = Smb2Header::new_request(Smb2Command::Logoff, *message_id);
+    let mid = message_id.fetch_add(1, Ordering::SeqCst);
+    let mut hdr = Smb2Header::new_request(Smb2Command::Logoff, mid);
     hdr.session_id = session_id;
-    *message_id += 1;
     let body = protocol::logoff::encode_logoff_request();
-    let _ = transport::send_message(stream, &hdr, &body).await;
-    let _ = transport::recv_message(stream).await;
+    buf.clear();
+    protocol::encode_message(&hdr, &body, &mut buf);
+    let _ = s.tcp_write.write_all(&buf).await;
+
+    let _ = s.tcp_write.flush().await;
 
     Ok(())
 }
