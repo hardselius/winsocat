@@ -7,6 +7,6 @@ license = "MIT"
 repository = "https://github.com/hardselius/winsocat"
 
 [dependencies]
-tokio = { version = "1", features = ["net", "io-util"] }
+tokio = { version = "1", features = ["net", "io-util", "sync", "rt"] }
 anyhow = "1"
 ntlmclient = "0.2"

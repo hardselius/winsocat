@@ -52,6 +52,9 @@ pub const STATUS_END_OF_FILE: u32 = 0xC000_0011;
 /// Buffer overflow — partial data returned.
 pub const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
 
+/// The pipe is broken (remote end closed).
+pub const STATUS_PIPE_BROKEN: u32 = 0xC000_014B;
+
 // ── NetBIOS session transport framing ───────────────────────────────────
 
 /// Encode a NetBIOS session message header (RFC 1002 §4.3.1).
