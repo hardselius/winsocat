@@ -381,7 +381,7 @@ async fn dispatch_responses(mut tcp_read: OwnedReadHalf, pending: Arc<Mutex<Pend
         }
         let _ = tx.send(Err(io::Error::new(
             io::ErrorKind::ConnectionAborted,
-            "SMB2 connection closed",
+            "SMB server closed the connection unexpectedly",
         )));
     }
     if verbose() {
@@ -448,7 +448,7 @@ async fn send_smb2_read(
 
     let resp = rx
         .await
-        .map_err(|_| io::Error::other("response channel closed"))??;
+        .map_err(|_| io::Error::other("lost connection to SMB server"))??;
 
     if resp.header.status == STATUS_SUCCESS || resp.header.status == STATUS_BUFFER_OVERFLOW {
         let read_resp = protocol::read::decode_read_response(&resp.body)
@@ -472,7 +472,7 @@ async fn send_smb2_read(
     }
 
     Err(io::Error::other(format!(
-        "SMB2 READ failed: {}",
+        "failed to read from pipe: server returned {}",
         status_name(resp.header.status)
     )))
 }
@@ -496,11 +496,11 @@ async fn send_smb2_write(
 
     let resp = rx
         .await
-        .map_err(|_| io::Error::other("response channel closed"))??;
+        .map_err(|_| io::Error::other("lost connection to SMB server"))??;
 
     if resp.header.status != STATUS_SUCCESS {
         return Err(io::Error::other(format!(
-            "SMB2 WRITE failed: {}",
+            "failed to write to pipe: server returned {}",
             status_name(resp.header.status)
         )));
     }

@@ -134,7 +134,10 @@ async fn smb2_negotiate(stream: &mut TcpStream, message_id: &mut u64) -> Result<
     }
 
     if resp.header.status != STATUS_SUCCESS {
-        bail!("NEGOTIATE failed: NT status 0x{:08X}", resp.header.status);
+        bail!(
+            "SMB2 negotiate failed: server returned {}",
+            status_name(resp.header.status)
+        );
     }
 
     let neg = protocol::negotiate::decode_negotiate_response(&resp.body)
@@ -201,9 +204,9 @@ async fn smb2_session_setup(
 
     if resp.header.status != STATUS_MORE_PROCESSING_REQUIRED {
         bail!(
-            "SESSION_SETUP leg 1 failed: expected STATUS_MORE_PROCESSING_REQUIRED, \
-             got NT status 0x{:08X}",
-            resp.header.status
+            "authentication failed (leg 1): server returned {} \
+             (expected STATUS_MORE_PROCESSING_REQUIRED)",
+            status_name(resp.header.status)
         );
     }
 
@@ -253,8 +256,8 @@ async fn smb2_session_setup(
 
     if resp.header.status != STATUS_SUCCESS {
         bail!(
-            "SESSION_SETUP leg 2 failed: NT status 0x{:08X}",
-            resp.header.status
+            "authentication failed: server returned {}",
+            status_name(resp.header.status)
         );
     }
 
@@ -290,8 +293,8 @@ async fn smb2_tree_connect(
 
     if resp.header.status != STATUS_SUCCESS {
         bail!(
-            "TREE_CONNECT failed: NT status 0x{:08X}",
-            resp.header.status
+            "failed to connect to IPC$ share: server returned {}",
+            status_name(resp.header.status)
         );
     }
 
@@ -342,7 +345,10 @@ async fn smb2_create(
     }
 
     if resp.header.status != STATUS_SUCCESS {
-        bail!("CREATE failed: NT status 0x{:08X}", resp.header.status);
+        bail!(
+            "failed to open pipe: server returned {}",
+            status_name(resp.header.status)
+        );
     }
 
     let create = protocol::create::decode_create_response(&resp.body)
@@ -376,7 +382,10 @@ async fn smb2_close(
     let resp = transport::recv_message(stream).await?;
 
     if resp.header.status != STATUS_SUCCESS {
-        bail!("CLOSE failed: NT status 0x{:08X}", resp.header.status);
+        bail!(
+            "failed to close pipe: server returned {}",
+            status_name(resp.header.status)
+        );
     }
 
     Ok(())
@@ -400,8 +409,8 @@ async fn smb2_tree_disconnect(
 
     if resp.header.status != STATUS_SUCCESS {
         bail!(
-            "TREE_DISCONNECT failed: NT status 0x{:08X}",
-            resp.header.status
+            "failed to disconnect from share: server returned {}",
+            status_name(resp.header.status)
         );
     }
 
@@ -419,7 +428,10 @@ async fn smb2_logoff(stream: &mut TcpStream, message_id: &mut u64, session_id: u
     let resp = transport::recv_message(stream).await?;
 
     if resp.header.status != STATUS_SUCCESS {
-        bail!("LOGOFF failed: NT status 0x{:08X}", resp.header.status);
+        bail!(
+            "failed to log off: server returned {}",
+            status_name(resp.header.status)
+        );
     }
 
     Ok(())

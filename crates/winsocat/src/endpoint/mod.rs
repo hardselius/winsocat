@@ -56,8 +56,11 @@ impl Factory {
 
 /// Parse address1 into a Strategy. First match wins.
 pub fn parse_strategy(input: &str) -> Result<Strategy> {
-    let elem = crate::address::AddressElement::try_parse(input)
-        .ok_or_else(|| anyhow::anyhow!("failed to parse address: {input}"))?;
+    let elem = crate::address::AddressElement::try_parse(input).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid address syntax: \"{input}\" (expected TAG:address,option=value,...)"
+        )
+    })?;
 
     if let Some(s) = stdio::try_parse_strategy(&elem) {
         return Ok(Strategy::Connect(Box::new(s)));
@@ -107,13 +110,16 @@ pub fn parse_strategy(input: &str) -> Result<Strategy> {
         return Ok(Strategy::Connect(Box::new(s)));
     }
 
-    anyhow::bail!("\"{input}\" is not available on [address1]")
+    anyhow::bail!("{}", unknown_address_hint(&elem.tag, "address1"))
 }
 
 /// Parse address2 into a Factory. First match wins.
 pub fn parse_factory(input: &str) -> Result<Factory> {
-    let elem = crate::address::AddressElement::try_parse(input)
-        .ok_or_else(|| anyhow::anyhow!("failed to parse address: {input}"))?;
+    let elem = crate::address::AddressElement::try_parse(input).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid address syntax: \"{input}\" (expected TAG:address,option=value,...)"
+        )
+    })?;
 
     if let Some(f) = stdio::try_parse_factory(&elem) {
         return Ok(Factory::new(Box::new(f)));
@@ -150,5 +156,47 @@ pub fn parse_factory(input: &str) -> Result<Factory> {
         return Ok(Factory::new(Box::new(f)));
     }
 
-    anyhow::bail!("\"{input}\" is not available on [address2]")
+    anyhow::bail!("{}", unknown_address_hint(&elem.tag, "address2"))
+}
+
+/// Produce a helpful error message for an unrecognized address tag.
+///
+/// If the tag matches a known platform-specific endpoint, tell the user
+/// which platform it requires. Otherwise, list the available tags.
+fn unknown_address_hint(tag: &str, position: &str) -> String {
+    let upper = tag.to_ascii_uppercase();
+
+    // Check for platform-gated tags used on the wrong OS
+    #[cfg(not(windows))]
+    {
+        if matches!(
+            upper.as_str(),
+            "NPIPE" | "NPIPE-LISTEN" | "HVSOCK" | "HVSOCK-LISTEN" | "WSL"
+        ) {
+            return format!("\"{tag}\" is only available on Windows");
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if matches!(upper.as_str(), "UNIX" | "UNIX-LISTEN") {
+            return format!("\"{tag}\" is only available on Unix (macOS/Linux)");
+        }
+    }
+
+    // Check for listen-mode tags in address2
+    if position == "address2"
+        && matches!(
+            upper.as_str(),
+            "TCP-LISTEN" | "UNIX-LISTEN" | "NPIPE-LISTEN" | "HVSOCK-LISTEN"
+        )
+    {
+        return format!(
+            "\"{tag}\" cannot be used as address2 (listen-mode is only valid for address1)"
+        );
+    }
+
+    format!(
+        "unknown address type \"{tag}\" (available: STDIO, TCP, TCP-LISTEN, EXEC, \
+         UNIX, UNIX-LISTEN, NPIPE, NPIPE-LISTEN, HVSOCK, HVSOCK-LISTEN, WSL, SP, SMB-PIPE)"
+    )
 }

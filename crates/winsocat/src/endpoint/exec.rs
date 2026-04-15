@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::io::{self, AsyncRead, AsyncWrite};
 use tokio::process::Command;
 
@@ -120,10 +120,17 @@ impl Connector for ExecConnector {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true)
-            .spawn()?;
+            .spawn()
+            .with_context(|| format!("failed to spawn {:?}", self.0.filename))?;
 
-        let stdout = child.stdout.take().expect("stdout not captured");
-        let stdin = child.stdin.take().expect("stdin not captured");
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("failed to capture stdout of child process"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("failed to capture stdin of child process"))?;
 
         Ok(Box::new(ChildPair {
             child,

@@ -26,7 +26,7 @@ pub fn negotiate_token(workstation: &str) -> Result<Vec<u8>> {
     });
 
     msg.to_bytes()
-        .map_err(|e| anyhow::anyhow!("failed to encode NTLM negotiate: {:?}", e))
+        .map_err(|e| anyhow::anyhow!("failed to build NTLM negotiate token: {e}"))
 }
 
 /// Generate the NTLM Authenticate message (Type 3) from the server's
@@ -43,11 +43,14 @@ pub fn authenticate_token(
 ) -> Result<Vec<u8>> {
     // Parse the challenge message
     let challenge_msg = ntlmclient::Message::try_from(challenge_bytes)
-        .map_err(|e| anyhow::anyhow!("failed to parse NTLM challenge: {:?}", e))?;
+        .map_err(|e| anyhow::anyhow!("failed to parse server NTLM challenge: {e}"))?;
 
     let challenge = match challenge_msg {
         ntlmclient::Message::Challenge(c) => c,
-        other => bail!("expected NTLM Challenge message, got: {:?}", other),
+        other => bail!(
+            "expected NTLM challenge from server, got message type {:?}",
+            std::mem::discriminant(&other)
+        ),
     };
 
     // Collect target info bytes
@@ -79,7 +82,7 @@ pub fn authenticate_token(
 
     auth_msg
         .to_bytes()
-        .map_err(|e| anyhow::anyhow!("failed to encode NTLM authenticate: {:?}", e))
+        .map_err(|e| anyhow::anyhow!("failed to build NTLM auth token: {e}"))
 }
 
 /// Generate an anonymous/guest NTLM Negotiate token.

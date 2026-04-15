@@ -56,9 +56,23 @@ impl SmbPipeAuth {
 }
 
 /// Resolve a value that may be an environment variable reference (`$VAR`).
+///
+/// If the value starts with `$`, the remainder is treated as an
+/// environment variable name. Returns the variable's value, or an
+/// empty string with a warning on stderr if the variable is not set.
+/// Non-prefixed values are returned as-is.
 fn resolve_env(value: &str) -> String {
     if let Some(var_name) = value.strip_prefix('$') {
-        std::env::var(var_name).unwrap_or_default()
+        match std::env::var(var_name) {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!(
+                    "warning: environment variable ${var_name} is not set, \
+                     using empty string"
+                );
+                String::new()
+            }
+        }
     } else {
         value.to_string()
     }
@@ -232,5 +246,25 @@ mod tests {
     fn case_insensitive_tag() {
         let elem = AddressElement::try_parse("smb-pipe:myserver:mypipe").unwrap();
         assert!(try_parse_smb_pipe(&elem).is_some());
+    }
+
+    #[test]
+    fn resolve_env_literal_value() {
+        assert_eq!(resolve_env("plaintext"), "plaintext");
+    }
+
+    #[test]
+    fn resolve_env_set_variable() {
+        std::env::set_var("TEST_RESOLVE_SET", "found_it");
+        assert_eq!(resolve_env("$TEST_RESOLVE_SET"), "found_it");
+        std::env::remove_var("TEST_RESOLVE_SET");
+    }
+
+    #[test]
+    fn resolve_env_unset_variable_returns_empty() {
+        // Make sure the variable doesn't exist
+        std::env::remove_var("TEST_RESOLVE_UNSET_XYZ");
+        let result = resolve_env("$TEST_RESOLVE_UNSET_XYZ");
+        assert_eq!(result, "");
     }
 }
