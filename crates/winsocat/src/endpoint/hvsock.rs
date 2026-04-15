@@ -50,10 +50,8 @@ fn parse_vm_guid(addr: &str) -> Option<uuid::Uuid> {
 }
 
 fn parse_service_id(addr: &str) -> Option<uuid::Uuid> {
-    if let Some(port_str) = addr
-        .strip_prefix("VSOCK-")
-        .or_else(|| addr.strip_prefix("vsock-"))
-    {
+    let upper = addr.to_ascii_uppercase();
+    if let Some(port_str) = upper.strip_prefix("VSOCK-") {
         let port: u32 = port_str.parse().ok()?;
         // serviceId format for VSOCK: {port}-facb-11e6-bd58-64006a7986d3
         let guid_str = format!("{:08x}-facb-11e6-bd58-64006a7986d3", port);
@@ -256,6 +254,22 @@ mod tests {
         assert!(parse_vm_guid("CHILDREN").is_some());
         assert!(parse_vm_guid("LOOPBACK").is_some());
         assert!(parse_vm_guid("PARENT").is_some());
+    }
+
+    #[test]
+    fn parse_hvsock_vsock_mixed_case() {
+        // VSOCK- prefix should be fully case-insensitive
+        for prefix in &["Vsock-", "vSoCk-", "VSOCK-", "vsock-"] {
+            let input = format!("HVSOCK:0cb41c0b-fd26-4a41-8370-dccb048e216e:{}2761", prefix);
+            let elem = AddressElement::try_parse(&input).unwrap();
+            let config = try_parse_hvsock_stream(&elem).unwrap();
+            assert_eq!(
+                config.service_id,
+                uuid::Uuid::parse_str("00000ac9-facb-11e6-bd58-64006a7986d3").unwrap(),
+                "failed for prefix: {}",
+                prefix
+            );
+        }
     }
 
     #[test]

@@ -47,6 +47,9 @@ pub fn try_parse_serial(elem: &AddressElement) -> Option<SerialConfig> {
         None => tokio_serial::DataBits::Eight,
     };
 
+    // C# StopBits enum: None=0, One=1, Two=2, OnePointFive=3.
+    // The underlying serialport crate only supports One and Two;
+    // stopbits=3 (OnePointFive) is not available and will be rejected.
     let stop_bits = match elem.options.get("stopbits") {
         Some(v) => match v.as_str() {
             "0" => tokio_serial::StopBits::One, // C# StopBits.None maps to 0
