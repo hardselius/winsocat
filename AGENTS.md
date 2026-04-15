@@ -20,7 +20,7 @@ Run a single test:
 cargo test test_name
 ```
 
-Any stable Rust toolchain works. CI runs on `windows-latest`, `ubuntu-latest`, and `macos-latest`. The app targets Windows for named pipes, Hyper-V sockets, and WSL endpoints; STDIO, TCP, UNIX, EXEC, and serial port endpoints work on all platforms.
+Any stable Rust toolchain works. CI runs on `windows-latest`, `ubuntu-latest`, and `macos-latest`. The app targets Windows for named pipes, Hyper-V sockets, and WSL endpoints; STDIO, TCP, UNIX, EXEC, SMB-PIPE, and serial port endpoints work on all platforms.
 
 ## Formatting & Linting
 
@@ -32,6 +32,12 @@ cargo clippy --workspace --all-targets -- -D warnings -W clippy::all -W clippy::
 ```
 
 Run `cargo fmt` before committing. Run clippy frequently during development to catch issues early.
+
+## Debugging
+
+Pass `-v` / `--verbose` to enable SMB2 protocol diagnostics on stderr. This logs every protocol step: negotiate, session setup, tree connect, create, and per-message read/write dispatching including NT status codes, message IDs, and credit grants.
+
+The verbose flag sets a global `AtomicBool` in the `smb2-pipe` crate via `smb2_pipe::set_verbose(true)`. All diagnostic output uses `eprintln!` and is gated behind `smb2_pipe::verbose()` checks, so there is zero cost when disabled.
 
 ## Project Layout
 
@@ -63,7 +69,7 @@ crates/
   smb2-pipe/                 # Minimal SMB2 client for remote named pipe access
     Cargo.toml
     src/
-      lib.rs                 # library root
+      lib.rs                 # library root, verbose flag, status_name helper
       auth.rs                # Auth enum (Ntlm, Anonymous)
       ntlm.rs                # NTLM token generation via ntlmclient
       transport.rs           # async send/recv with NetBIOS framing
@@ -116,6 +122,18 @@ TAG:address,option1=value1,option2=value2
 ```
 
 Parsed by `AddressElement::try_parse`. Supports quoted values in the address portion.
+
+### SMB2 protocol notes
+
+The `smb2-pipe` crate implements a minimal SMB2 client — just enough to negotiate, authenticate (NTLM or anonymous), connect to `IPC$`, and open/read/write a named pipe. Key design decisions:
+
+- **Concurrent READ/WRITE**: Named pipes require simultaneously in-flight READ and WRITE operations on the same TCP connection. The client splits TCP into read/write halves and uses a response dispatcher (`HashMap<u64, oneshot::Sender>`) keyed by message ID.
+
+- **`STATUS_PENDING` handling**: Real Windows SMB servers send `STATUS_PENDING` (0x00000103) as an interim response for blocking pipe READs. The dispatcher must skip these without consuming the pending slot — the real response arrives later with the same message ID.
+
+- **Teardown**: When the caller's write side closes (stdin EOF), the writer task signals teardown. The teardown task waits for the reader task to finish (up to 5 seconds) before sending Close, Tree Disconnect, and Logoff. This prevents killing the session while a READ response is still in-flight.
+
+- **Credits**: Requests ask for 16 credits to ensure concurrent READ + WRITE always have enough credits available.
 
 ## Dependencies
 

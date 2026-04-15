@@ -1,218 +1,269 @@
-# winsocat [![Testing][ci-badge]][ci] [![Release][release-badge]][release]
+# winsocat [![Testing][ci-badge]][ci]
 
 [ci]: https://github.com/hardselius/winsocat/actions/workflows/unit-test.yml
 [ci-badge]: https://github.com/hardselius/winsocat/actions/workflows/unit-test.yml/badge.svg
-[release]: https://github.com/hardselius/winsocat/releases
-[release-badge]: https://img.shields.io/github/v/release/hardselius/winsocat?include_prereleases
 
-> **Note:** This is an experimental, AI-assisted rewrite of [firejox/WinSocat](https://github.com/firejox/WinSocat) in Rust. The original project is a .NET/C# application. This rewrite aims for CLI compatibility with the original while targeting cross-platform support. It is not production-ready.
+A socat-like relay for bridging I/O streams across protocols and
+platforms. Connect standard I/O, TCP sockets, Unix sockets, named
+pipes, serial ports, Hyper-V sockets, and remote SMB2 pipes — in any
+combination.
 
-WinSocat is a socat-like program specific on Windows platform. It can bridge Windows named pipe and other general I/O, e.g., STDIO, TCP, the STDIO of Process.
+> Rust rewrite of [firejox/WinSocat](https://github.com/firejox/WinSocat),
+> originally written in C#/.NET.
 
 ## Installation
 
-### From source
 [Install Rust](https://rustup.rs/) and build from source:
 
 ```
-cargo install --path .
+cargo install --path crates/winsocat
 ```
+
+## Usage
+
+```
+winsocat [OPTIONS] <ADDRESS1> <ADDRESS2>
+```
+
+`ADDRESS1` drives execution — it can either connect to a remote
+endpoint or listen for incoming connections. `ADDRESS2` is the other
+side of the relay, created fresh for each incoming connection when
+listening.
+
+Addresses use the format `TAG:address,option=value,...`. Tags are
+case-insensitive.
+
+| Tag | Mode | Platform | Description |
+|---|---|---|---|
+| `STDIO` | connect | all | Standard input/output |
+| `TCP` | connect | all | TCP client |
+| `TCP-LISTEN` | listen | all | TCP server |
+| `EXEC` | connect | all | Child process stdin/stdout |
+| `UNIX` | connect | unix | Unix domain socket client |
+| `UNIX-LISTEN` | listen | unix | Unix domain socket server |
+| `NPIPE` | connect | windows | Windows named pipe client |
+| `NPIPE-LISTEN` | listen | windows | Windows named pipe server |
+| `HVSOCK` | connect | windows | Hyper-V socket client |
+| `HVSOCK-LISTEN` | listen | windows | Hyper-V socket server |
+| `WSL` | connect | windows | WSL process (sugar over EXEC) |
+| `SP` | connect | all | Serial port |
+| `SMB-PIPE` | connect | all | Remote named pipe over SMB2 |
+
+Listen-mode tags (`TCP-LISTEN`, `UNIX-LISTEN`, `NPIPE-LISTEN`,
+`HVSOCK-LISTEN`) are only valid for `ADDRESS1`.
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `-v`, `--verbose` | Print SMB2 protocol diagnostics to stderr |
 
 ## Quick Start
 
-These examples work on any platform (macOS, Linux, Windows). You just need two terminal windows.
+These examples work on any platform. You need two terminal windows.
 
-### Chat between two terminals
-
-Start a listener in one terminal, connect from the other, and type messages back and forth:
+**Chat between two terminals:**
 
 ```
-# Terminal 1: listen for incoming connections
+# Terminal 1 — listen
 winsocat TCP-LISTEN:127.0.0.1:8000 STDIO
 
-# Terminal 2: connect to the listener
+# Terminal 2 — connect
 winsocat STDIO TCP:127.0.0.1:8000
 ```
 
-Anything you type in either terminal appears in the other.
+Anything typed in either terminal appears in the other.
 
-### Connect to an existing server
-
-If something is already listening (e.g. netcat), connect to it:
+**Pipe a command's output over TCP:**
 
 ```
-# Terminal 1: start a listener with netcat
-nc -l 8000
-
-# Terminal 2: connect with winsocat
-winsocat STDIO TCP:127.0.0.1:8000
-```
-
-> **Note:** If nothing is listening, you'll get `Connection refused`. Start the listener first.
-
-### Pipe a command's output over TCP
-
-Use `EXEC` to run a command and relay its stdin/stdout over the network:
-
-```
-# Terminal 1: serve a directory listing to anyone who connects
+# Terminal 1 — serve a directory listing
 winsocat TCP-LISTEN:127.0.0.1:9000 EXEC:ls
 
-# Terminal 2: connect and see the output
+# Terminal 2 — connect and read
 winsocat STDIO TCP:127.0.0.1:9000
 ```
 
-On Windows, use `EXEC:dir` instead of `EXEC:ls`.
-
-### TCP port forwarding
-
-Forward a local port to a remote service:
+**TCP port forwarding:**
 
 ```
 winsocat TCP-LISTEN:127.0.0.1:8080 TCP:example.com:80
 ```
 
-Now connecting to `localhost:8080` reaches `example.com:80`.
+Connecting to `localhost:8080` now reaches `example.com:80`.
 
-### Unix socket to TCP relay (macOS/Linux)
+## Address Types
 
-Bridge a Unix domain socket and a TCP port:
+### STDIO
 
-```
-# Terminal 1: listen on a TCP port
-nc -l 8000
+Reads from stdin, writes to stdout. Useful for interactive sessions
+and piping data through winsocat.
 
-# Terminal 2: relay from a Unix socket to TCP
-winsocat UNIX-LISTEN:/tmp/test.sock TCP:127.0.0.1:8000
-
-# Terminal 3: connect to the Unix socket
-socat - UNIX-CONNECT:/tmp/test.sock
-```
-
-Text typed in Terminal 3 appears in Terminal 1, and vice versa.
-
-## Command Form
-
-The WinSocat is accept two address pattern
-
-```
-winsocat.exe [address1] [address2]
-```
-
-The `address1` can accept `STDIO`, `TCP-LISTEN`, `TCP`, `NPIPE`, `NPIPE-LISTEN`, `EXEC`, `WSL`, `UNIX`, `UNIX-LISTEN`, `HVSOCK`, `HVSOCK-LISTEN`, `SP`, `SMB-PIPE` socket types.
-
-The `address2` can accept `STDIO`, `TCP`, `NPIPE`, `EXEC`, `WSL`, `UNIX`, `HVSOCK`, `SP`, `SMB-PIPE` socket types.
-
-## Examples
-
-* It can bridge standard input/output and tcp connection to address **127.0.0.1** on port **80**.
 ```
 winsocat STDIO TCP:127.0.0.1:80
 ```
 
-* It can forward from Windows named pipe to remote tcp socket.
+### TCP / TCP-LISTEN
+
+Standard TCP connections. `TCP` connects to a remote host, `TCP-LISTEN`
+accepts incoming connections and spawns a relay for each one.
+
 ```
+# Connect stdin/stdout to a TCP server
+winsocat STDIO TCP:127.0.0.1:80
+
+# Forward one TCP port to another
+winsocat TCP-LISTEN:127.0.0.1:8080 TCP:example.com:80
+```
+
+### EXEC
+
+Spawns a child process and relays its stdin/stdout. The command is
+passed as-is to the system shell.
+
+```
+# Serve a directory listing
+winsocat TCP-LISTEN:127.0.0.1:9000 EXEC:ls
+```
+
+On Windows:
+
+```
+winsocat EXEC:C:\Windows\System32\cmd.exe TCP:127.0.0.1:8000
+```
+
+### UNIX / UNIX-LISTEN
+
+Unix domain sockets. Available on macOS and Linux.
+
+```
+# Bridge a Unix socket and a TCP port
+winsocat UNIX-LISTEN:/tmp/test.sock TCP:127.0.0.1:8000
+```
+
+```
+# Connect to an existing Unix socket
+winsocat STDIO UNIX:/tmp/test.sock
+```
+
+### Named Pipes — NPIPE / NPIPE-LISTEN (Windows)
+
+Windows named pipes, both local and remote.
+
+```
+# Listen on a local named pipe
 winsocat NPIPE-LISTEN:myPipe TCP:127.0.0.1:80
-```
 
-* It can use Windows named pipe for network connection
-```
+# Connect to a remote named pipe
 winsocat NPIPE:RemoteServer:RemotePipe STDIO
-```
 
-* It can create reverse shell.
-```
-winsocat EXEC:C:\Windows\system32\cmd.exe TCP:127.0.0.1:8000
-```
-
-* It can bridge Windows named pipe and [unix socket on Windows](https://devblogs.microsoft.com/commandline/af_unix-comes-to-windows/)
-```
+# Bridge a named pipe and a Unix socket
 winsocat NPIPE-LISTEN:fooPipe UNIX:foo.sock
 ```
 
-### Interact with WSL(Windows Subsystem for Linux)
+### Hyper-V Sockets — HVSOCK / HVSOCK-LISTEN (Windows)
 
-WinSocat provide the syntax sugar for WSL program. Hence, this example
+Communicate with Hyper-V virtual machines using VM ID and service ID.
+Useful for bridging between a Windows host and WSL2 or other Hyper-V
+guests.
+
+```
+winsocat STDIO HVSOCK:0cb41c0b-fd26-4a41-8370-dccb048e216e:00000ac9-facb-11e6-bd58-64006a7986d3
+```
+
+VSOCK ports on Linux map to service IDs on Windows following the
+pattern `[port in hex]-facb-11e6-bd58-64006a7986d3`. Winsocat
+provides a shorthand for this:
+
+```
+winsocat STDIO HVSOCK:0cb41c0b-fd26-4a41-8370-dccb048e216e:vsock-2761
+```
+
+Here `vsock-2761` expands to `00000ac9-facb-11e6-bd58-64006a7986d3`
+(2761 = 0xAC9). See [Hyper-V integration services][hyperv-docs] for
+details.
+
+[hyperv-docs]: https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/user-guide/make-integration-service
+
+### WSL (Windows)
+
+Syntax sugar for running a command inside a WSL distribution. This:
+
 ```
 winsocat STDIO WSL:cat,distribution=Ubuntu,user=root
 ```
-would be equivalent to
+
+is equivalent to:
+
 ```
 winsocat STDIO EXEC:"C:\Windows\System32\wsl.exe -d Ubuntu -u root cat"
 ```
-if `wsl.exe` is located on `C:\Windows\System32`.
 
-The `distribution` and `user` are optional parameters. If these parameters are not specified, it will run with the default options.
-You can combine the `socat` of WSL distribution for the communication between WSL and Windows Host.
+Both `distribution` and `user` are optional — omit them to use the
+default WSL distribution and user.
 
-* Windows named pipe forwarding to WSL Unix Socket
+**Bridging WSL and Windows named pipes:**
+
 ```
+# Windows side: named pipe → WSL Unix socket
 winsocat NPIPE-LISTEN:fooPipe WSL:"socat STDIO unix-connect:foo.sock"
+
+# WSL side: Unix socket → Windows named pipe
+socat unix-listen:foo.sock,fork EXEC:"/path/to/winsocat STDIO NPIPE:fooPipe"
 ```
 
-* WSL Unix Socket forwarding to Windows named pipe
-```
-socat unix-listen:foo.sock,fork EXEC:"/path/to/winsocat.exe STDIO NPIPE:fooPipe"
-```
+### Serial Port — SP
 
-### HyperV Socket Support
-
-WinSocat is also allow to interact with hyper-v socket. It requires the vmId and serviceId to connect. For example, you can use this
+Relay data to and from a serial port. The `baudrate`, `parity`,
+`databits`, and `stopbits` options are all optional.
 
 ```
-winsocat stdio hvsock:0cb41c0b-fd26-4a41-8370-dccb048e216e:00000ac9-facb-11e6-bd58-64006a7986d3
+winsocat SP:COM1,baudrate=115200 STDIO
 ```
 
-to connect the VSOCK socket opened by WSL2 program. This program is running under the HyperV-VM with vmId `0cb41c0b-fd26-4a41-8370-dccb048e216e`. 
-And it opens the VSOCK port 2761(the hex format is 0x00000ac9). According to [hyper-v on windows](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/user-guide/make-integration-service),
-the VSOCK port on Linux will be equivalent to the serviceId `[port in hex]-facb-11e6-bd58-64006a7986d3` on windows. Hence, WinSocat provide the short representation for VSOCK.
+**Paired virtual ports with [com0com](https://sourceforge.net/projects/com0com/):**
+
+Create a virtual pair `COM5 <=> COM6`, then connect each end:
 
 ```
-winsocat stdio hvsock:0cb41c0b-fd26-4a41-8370-dccb048e216e:vsock-2761
+# Terminal 1
+winsocat SP:COM5 STDIO
+
+# Terminal 2
+winsocat SP:COM6 STDIO
 ```
 
-This `vsock-2761` will be viewed as the serviceId `00000ac9-facb-11e6-bd58-64006a7986d3`.
+The two terminals can now communicate through the virtual serial link.
 
-### SMB-PIPE Support
+### SMB-PIPE
 
-WinSocat can connect to remote Windows named pipes via SMB2, without needing a Windows client. This works on all platforms.
+Connect to a remote Windows named pipe over SMB2. This works from any
+platform — no Windows client required. Authentication uses NTLM.
 
 ```
 winsocat TCP-LISTEN:8080 SMB-PIPE:fileserver:mypipe,user=admin,password=secret,domain=CORP
 ```
 
-This forwards TCP connections on port 8080 to the named pipe `mypipe` on `fileserver` using NTLM authentication.
+This forwards TCP connections on port 8080 to the named pipe `mypipe`
+on `fileserver`.
 
-Options:
-- `user` — NTLM username (omit for anonymous access)
-- `password` — password (supports `$ENV_VAR` references for security)
-- `domain` — NTLM domain (default: `.`)
-- `port` — TCP port for SMB2 (default: 445)
+| Option | Default | Description |
+|---|---|---|
+| `user` | *(anonymous)* | NTLM username |
+| `password` | *(empty)* | Password (supports `$ENV_VAR` references) |
+| `domain` | `.` | NTLM domain |
+| `port` | `445` | SMB2 TCP port |
 
-Example with environment variable for the password:
+**Using an environment variable for the password:**
+
 ```
+export SMB_PASSWORD=secret
 winsocat STDIO SMB-PIPE:server:pipe,user=admin,password=$SMB_PASSWORD
 ```
 
-### Serial Port Support
+**Troubleshooting:** Pass `-v` to see the full SMB2 handshake and
+per-message diagnostics on stderr.
 
-WinSocat can relay the data of serial port. For example,
+## License
 
-```
-winsocat sp:COM1,baudrate=12500,parity=1,databits=16,stopbits=0 stdio
-```
-
-The `baudrate`, `parity`, `databits` and `stopbits` is optional parameter. Another example is to integrate
-with [com0com](https://sourceforge.net/projects/com0com/).
-
-1. Assume you have already created paired com port `COM5 <=> COM6` via [com0com](https://sourceforge.net/projects/com0com/).
-2. Execute the command at terminal
-```
-winsocat sp:COM5 stdio
-```
-3. Execute the command at another terminal
-```
-winsocat sp:COM6 stdio
-```
-
-Now these two terminals can interact with each other.
+[MIT](LICENSE)
