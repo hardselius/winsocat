@@ -9,3 +9,4 @@ repository = "https://github.com/hardselius/winsocat"
 [dependencies]
 tokio = { version = "1", features = ["net", "io-util"] }
 anyhow = "1"
+ntlmclient = "0.2"

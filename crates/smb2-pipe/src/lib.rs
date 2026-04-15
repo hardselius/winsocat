@@ -4,4 +4,8 @@
 //! remote named pipe, authenticate with NTLM, and expose the pipe as an
 //! `AsyncRead + AsyncWrite` stream. It is not a general-purpose SMB client.
 
+pub mod auth;
+pub mod ntlm;
 pub mod protocol;
+pub mod session;
+pub mod transport;
