@@ -23,6 +23,10 @@ use smb2_pipe::protocol::{
     self, Smb2Command, Smb2Flags, Smb2Header, STATUS_MORE_PROCESSING_REQUIRED, STATUS_SUCCESS,
 };
 
+/// STATUS_PENDING — server sends this as an interim response for blocking
+/// operations (like pipe READ when no data is available yet).
+const STATUS_PENDING: u32 = 0x0000_0103;
+
 // ── Mock SMB2 Server ────────────────────────────────────────────────────
 
 /// A pending READ that hasn't been answered yet.
@@ -36,6 +40,12 @@ struct MockPipeState {
     pending_read: Option<PendingRead>,
 }
 
+/// If true, the mock server sends STATUS_PENDING before holding a READ.
+/// This simulates real Windows SMB server behavior.
+struct MockSmb2ServerConfig {
+    send_pending: bool,
+}
+
 /// A minimal mock SMB2 server that echoes pipe writes back on reads.
 ///
 /// Uses split TCP to handle concurrent in-flight requests from the
@@ -43,12 +53,20 @@ struct MockPipeState {
 /// pending until a WRITE provides data.
 struct MockSmb2Server {
     listener: TcpListener,
+    config: MockSmb2ServerConfig,
 }
 
 impl MockSmb2Server {
     async fn bind() -> Result<Self> {
+        Self::bind_with_config(MockSmb2ServerConfig {
+            send_pending: false,
+        })
+        .await
+    }
+
+    async fn bind_with_config(config: MockSmb2ServerConfig) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Ok(Self { listener })
+        Ok(Self { listener, config })
     }
 
     fn port(&self) -> u16 {
@@ -134,6 +152,14 @@ impl MockSmb2Server {
                 Smb2Command::Read => {
                     let mut state = pipe_state.lock().await;
                     if state.data.is_empty() {
+                        // Optionally send STATUS_PENDING interim response,
+                        // simulating real Windows SMB server behavior.
+                        if self.config.send_pending {
+                            let body = encode_simple_response(9);
+                            let hdr =
+                                response_header(&req_hdr, STATUS_PENDING, session_id, tree_id);
+                            send_response_on(&tcp_write, &hdr, &body).await?;
+                        }
                         // Hold this READ pending until data arrives
                         state.pending_read = Some(PendingRead {
                             req_header: req_hdr,
@@ -530,6 +556,43 @@ async fn smb_pipe_client_multiple_writes() {
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await.unwrap();
     assert_eq!(&buf[..n], b"firstsecond");
+
+    drop(stream);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;
+}
+
+/// Test that the client correctly handles STATUS_PENDING interim responses
+/// from the server on READ operations. Real Windows SMB servers send this
+/// when a pipe READ blocks waiting for data.
+#[tokio::test]
+async fn smb_pipe_client_status_pending() {
+    let config = MockSmb2ServerConfig { send_pending: true };
+    let server = MockSmb2Server::bind_with_config(config).await.unwrap();
+    let port = server.port();
+
+    let server_handle = tokio::spawn(async move {
+        if let Err(e) = server.serve_one().await {
+            eprintln!("mock server error: {e}");
+        }
+    });
+
+    let auth = Auth::ntlm("user", "pass", ".");
+    let client = SmbPipeClient::connect("127.0.0.1", port, "testpipe", &auth)
+        .await
+        .unwrap();
+
+    let mut stream = client.stream;
+
+    // Write data — the server will first send STATUS_PENDING for the
+    // pending READ, then the real READ response with the echoed data.
+    stream.write_all(b"pending test").await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Read it back
+    let mut buf = vec![0u8; 1024];
+    let n = stream.read(&mut buf).await.unwrap();
+    assert_eq!(&buf[..n], b"pending test");
 
     drop(stream);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server_handle).await;

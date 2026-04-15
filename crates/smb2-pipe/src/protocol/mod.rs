@@ -55,6 +55,12 @@ pub const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
 /// The pipe is broken (remote end closed).
 pub const STATUS_PIPE_BROKEN: u32 = 0xC000_014B;
 
+/// The operation is pending — the server will respond asynchronously.
+pub const STATUS_PENDING: u32 = 0x0000_0103;
+
+/// No data available on the pipe right now (try again).
+pub const STATUS_PIPE_EMPTY: u32 = 0xC000_00D9;
+
 // ── NetBIOS session transport framing ───────────────────────────────────
 
 /// Encode a NetBIOS session message header (RFC 1002 §4.3.1).

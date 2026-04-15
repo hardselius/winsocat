@@ -18,6 +18,7 @@ use crate::protocol::{
     self, Smb2Command, Smb2Header, STATUS_MORE_PROCESSING_REQUIRED, STATUS_SUCCESS,
 };
 use crate::transport;
+use crate::{status_name, verbose};
 
 /// State for an established SMB2 session.
 #[derive(Debug)]
@@ -124,12 +125,33 @@ async fn smb2_negotiate(stream: &mut TcpStream, message_id: &mut u64) -> Result<
     transport::send_message(stream, &hdr, &body).await?;
     let resp = transport::recv_message(stream).await?;
 
+    if verbose() {
+        eprintln!(
+            "[smb2] NEGOTIATE response: status={} credits={}",
+            status_name(resp.header.status),
+            resp.header.credit_request_response,
+        );
+    }
+
     if resp.header.status != STATUS_SUCCESS {
         bail!("NEGOTIATE failed: NT status 0x{:08X}", resp.header.status);
     }
 
     let neg = protocol::negotiate::decode_negotiate_response(&resp.body)
         .context("failed to parse NEGOTIATE response")?;
+
+    if verbose() {
+        eprintln!(
+            "[smb2] NEGOTIATE: dialect=0x{:04X} security_mode=0x{:04X} \
+             max_read={} max_write={} max_transact={} caps=0x{:08X}",
+            neg.dialect_revision,
+            neg.security_mode,
+            neg.max_read_size,
+            neg.max_write_size,
+            neg.max_transact_size,
+            neg.capabilities,
+        );
+    }
 
     if neg.dialect_revision != protocol::negotiate::DIALECT_SMB_2_1 {
         bail!(
@@ -154,6 +176,13 @@ async fn smb2_session_setup(
         Auth::Anonymous => ntlm::anonymous_negotiate_token()?,
     };
 
+    if verbose() {
+        eprintln!(
+            "[smb2] SESSION_SETUP leg 1: sending {} byte NTLM negotiate token",
+            negotiate_token.len()
+        );
+    }
+
     let hdr = Smb2Header::new_request(Smb2Command::SessionSetup, *message_id);
     *message_id += 1;
 
@@ -161,6 +190,14 @@ async fn smb2_session_setup(
 
     transport::send_message(stream, &hdr, &body).await?;
     let resp = transport::recv_message(stream).await?;
+
+    if verbose() {
+        eprintln!(
+            "[smb2] SESSION_SETUP leg 1 response: status={} session_id=0x{:016X}",
+            status_name(resp.header.status),
+            resp.header.session_id,
+        );
+    }
 
     if resp.header.status != STATUS_MORE_PROCESSING_REQUIRED {
         bail!(
@@ -191,6 +228,13 @@ async fn smb2_session_setup(
         Auth::Anonymous => ntlm::anonymous_authenticate_token(&setup_resp.security_buffer)?,
     };
 
+    if verbose() {
+        eprintln!(
+            "[smb2] SESSION_SETUP leg 2: sending {} byte NTLM auth token",
+            auth_token.len()
+        );
+    }
+
     let mut hdr = Smb2Header::new_request(Smb2Command::SessionSetup, *message_id);
     hdr.session_id = session_id;
     *message_id += 1;
@@ -199,6 +243,13 @@ async fn smb2_session_setup(
 
     transport::send_message(stream, &hdr, &body).await?;
     let resp = transport::recv_message(stream).await?;
+
+    if verbose() {
+        eprintln!(
+            "[smb2] SESSION_SETUP leg 2 response: status={}",
+            status_name(resp.header.status),
+        );
+    }
 
     if resp.header.status != STATUS_SUCCESS {
         bail!(
@@ -216,6 +267,10 @@ async fn smb2_tree_connect(
     session_id: u64,
     path: &str,
 ) -> Result<u32> {
+    if verbose() {
+        eprintln!("[smb2] TREE_CONNECT: path={path}");
+    }
+
     let mut hdr = Smb2Header::new_request(Smb2Command::TreeConnect, *message_id);
     hdr.session_id = session_id;
     *message_id += 1;
@@ -224,6 +279,14 @@ async fn smb2_tree_connect(
 
     transport::send_message(stream, &hdr, &body).await?;
     let resp = transport::recv_message(stream).await?;
+
+    if verbose() {
+        eprintln!(
+            "[smb2] TREE_CONNECT response: status={} tree_id={}",
+            status_name(resp.header.status),
+            resp.header.tree_id,
+        );
+    }
 
     if resp.header.status != STATUS_SUCCESS {
         bail!(
@@ -234,6 +297,10 @@ async fn smb2_tree_connect(
 
     let tree = protocol::tree_connect::decode_tree_connect_response(&resp.body)
         .context("failed to parse TREE_CONNECT response")?;
+
+    if verbose() {
+        eprintln!("[smb2] TREE_CONNECT: share_type=0x{:02X}", tree.share_type);
+    }
 
     // share_type 0x02 = named pipe
     if tree.share_type != 0x02 {
@@ -253,6 +320,10 @@ async fn smb2_create(
     tree_id: u32,
     pipe_name: &str,
 ) -> Result<FileId> {
+    if verbose() {
+        eprintln!("[smb2] CREATE: pipe_name={pipe_name}");
+    }
+
     let mut hdr = Smb2Header::new_request(Smb2Command::Create, *message_id);
     hdr.session_id = session_id;
     hdr.tree_id = tree_id;
@@ -263,12 +334,26 @@ async fn smb2_create(
     transport::send_message(stream, &hdr, &body).await?;
     let resp = transport::recv_message(stream).await?;
 
+    if verbose() {
+        eprintln!(
+            "[smb2] CREATE response: status={}",
+            status_name(resp.header.status),
+        );
+    }
+
     if resp.header.status != STATUS_SUCCESS {
         bail!("CREATE failed: NT status 0x{:08X}", resp.header.status);
     }
 
     let create = protocol::create::decode_create_response(&resp.body)
         .context("failed to parse CREATE response")?;
+
+    if verbose() {
+        eprintln!(
+            "[smb2] CREATE: file_id=({:016X},{:016X}) action={}",
+            create.file_id.persistent, create.file_id.volatile, create.create_action,
+        );
+    }
 
     Ok(create.file_id)
 }

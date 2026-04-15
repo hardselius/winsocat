@@ -49,6 +49,9 @@ struct Cli {
     address1: String,
     /// Second address (connect only, created per connection)
     address2: String,
+    /// Enable verbose diagnostic output on stderr
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 #[tokio::main]
@@ -62,6 +65,10 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
+    if cli.verbose {
+        smb2_pipe::set_verbose(true);
+    }
+
     let strategy = parse_strategy(&cli.address1)?;
     let factory = Arc::new(parse_factory(&cli.address2)?);
 

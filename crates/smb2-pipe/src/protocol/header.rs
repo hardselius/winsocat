@@ -87,7 +87,10 @@ impl Smb2Header {
             credit_charge: 1,
             status: 0,
             command,
-            credit_request_response: 1,
+            // Request multiple credits so concurrent READ+WRITE can
+            // both be in-flight. Servers may grant fewer, but asking
+            // for a reasonable number avoids credit starvation.
+            credit_request_response: 16,
             flags: 0,
             next_command: 0,
             message_id,

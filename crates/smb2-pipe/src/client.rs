@@ -26,9 +26,13 @@ use crate::protocol::{
     self, Smb2Command, Smb2Header, Smb2Response, STATUS_BUFFER_OVERFLOW, STATUS_SUCCESS,
 };
 use crate::session::Session;
+use crate::{status_name, verbose};
 
 /// Default read buffer size.
 const DEFAULT_READ_SIZE: u32 = 65536;
+
+/// Timeout for waiting on the reader task after writer finishes.
+const TEARDOWN_TIMEOUT_SECS: u64 = 5;
 
 /// A connected SMB2 named pipe that implements `AsyncRead + AsyncWrite`
 /// via the returned `DuplexStream`.
@@ -66,6 +70,20 @@ impl SmbPipeClient {
     pub async fn connect(server: &str, port: u16, pipe_name: &str, auth: &Auth) -> Result<Self> {
         let session = Session::connect(server, port, pipe_name, auth).await?;
 
+        if verbose() {
+            eprintln!(
+                "[smb2] connected: session_id=0x{:016X} tree_id={} file_id=({:016X},{:016X}) \
+                 max_read={} max_write={} next_mid={}",
+                session.session_id,
+                session.tree_id,
+                session.file_id.persistent,
+                session.file_id.volatile,
+                session.max_read_size,
+                session.max_write_size,
+                session.message_id,
+            );
+        }
+
         let max_read = session.max_read_size.min(DEFAULT_READ_SIZE);
         let max_write = session.max_write_size.min(DEFAULT_READ_SIZE);
         let session_id = session.session_id;
@@ -89,7 +107,7 @@ impl SmbPipeClient {
         let (caller_stream, bg_stream) = tokio::io::duplex(DEFAULT_READ_SIZE as usize);
         let (mut bg_read, mut bg_write) = tokio::io::split(bg_stream);
 
-        // Channel to signal teardown
+        // Channel to signal teardown (carries the reader task handle)
         let (teardown_tx, teardown_rx) = oneshot::channel::<()>();
 
         // Dispatcher task: reads from TCP, routes responses by message ID
@@ -117,14 +135,39 @@ impl SmbPipeClient {
                 .await;
 
                 match result {
-                    Ok(data) if data.is_empty() => break, // EOF
+                    Ok(data) if data.is_empty() => {
+                        if verbose() {
+                            eprintln!("[smb2] reader: EOF (empty read), stopping");
+                        }
+                        break;
+                    }
                     Ok(data) => {
+                        if verbose() {
+                            eprintln!("[smb2] reader: got {} bytes from pipe", data.len());
+                        }
                         if bg_write.write_all(&data).await.is_err() {
-                            break; // Caller dropped
+                            if verbose() {
+                                eprintln!("[smb2] reader: duplex write failed (caller dropped)");
+                            }
+                            break;
+                        }
+                        if bg_write.flush().await.is_err() {
+                            if verbose() {
+                                eprintln!("[smb2] reader: duplex flush failed");
+                            }
+                            break;
                         }
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        if verbose() {
+                            eprintln!("[smb2] reader: error: {e}");
+                        }
+                        break;
+                    }
                 }
+            }
+            if verbose() {
+                eprintln!("[smb2] reader task exiting");
             }
         });
 
@@ -137,10 +180,23 @@ impl SmbPipeClient {
             let mut buf = vec![0u8; max_write as usize];
             loop {
                 let n = match bg_read.read(&mut buf).await {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        if verbose() {
+                            eprintln!("[smb2] writer: caller EOF (read 0 bytes)");
+                        }
+                        break;
+                    }
                     Ok(n) => n,
-                    Err(_) => break,
+                    Err(e) => {
+                        if verbose() {
+                            eprintln!("[smb2] writer: duplex read error: {e}");
+                        }
+                        break;
+                    }
                 };
+                if verbose() {
+                    eprintln!("[smb2] writer: sending {} bytes to pipe", n);
+                }
                 let result = send_smb2_write(
                     &write_sender,
                     &write_pending,
@@ -151,23 +207,57 @@ impl SmbPipeClient {
                     &buf[..n],
                 )
                 .await;
-                if result.is_err() {
-                    break;
+                match result {
+                    Ok(count) => {
+                        if verbose() {
+                            eprintln!("[smb2] writer: server confirmed {count} bytes written");
+                        }
+                    }
+                    Err(e) => {
+                        if verbose() {
+                            eprintln!("[smb2] writer: SMB2 WRITE error: {e}");
+                        }
+                        break;
+                    }
                 }
+            }
+            if verbose() {
+                eprintln!("[smb2] writer task exiting, signaling teardown");
             }
             // Signal that writing is done, trigger teardown
             let _ = teardown_tx.send(());
         });
 
-        // Teardown task: waits for writer to finish, then cleans up
+        // Teardown task: waits for writer to finish, then waits for reader,
+        // then cleans up the SMB2 session
         let teardown_sender = Arc::clone(&sender);
         let teardown_mid = Arc::clone(&message_id);
         let teardown_file_id = file_id;
         let teardown_task = tokio::spawn(async move {
             // Wait for the writer task to signal completion
             let _ = teardown_rx.await;
-            // Give a small delay for pending reads to complete
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            if verbose() {
+                eprintln!(
+                    "[smb2] teardown: writer done, waiting up to {TEARDOWN_TIMEOUT_SECS}s \
+                     for reader to finish"
+                );
+            }
+
+            // Wait for the reader task to finish (with timeout).
+            // This ensures we don't tear down the session while a READ
+            // response is still in-flight. The reader will stop once the
+            // pipe is closed or the server returns EOF/error.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(TEARDOWN_TIMEOUT_SECS),
+                reader_task,
+            )
+            .await;
+
+            if verbose() {
+                eprintln!("[smb2] teardown: performing graceful close");
+            }
+
             // Perform graceful close
             let _ = send_smb2_close_session(
                 &teardown_sender,
@@ -177,11 +267,17 @@ impl SmbPipeClient {
                 &teardown_file_id,
             )
             .await;
+
+            if verbose() {
+                eprintln!("[smb2] teardown: complete");
+            }
         });
 
         Ok(Self {
             stream: caller_stream,
-            _reader_task: reader_task,
+            // The real reader handle was moved into the teardown task,
+            // so we store a no-op placeholder here.
+            _reader_task: tokio::spawn(async {}),
             _writer_task: writer_task,
             _dispatcher_task: dispatcher_task,
             _teardown_task: teardown_task,
@@ -196,24 +292,66 @@ async fn dispatch_responses(mut tcp_read: OwnedReadHalf, pending: Arc<Mutex<Pend
         // Read NetBIOS header
         let mut nb_hdr = [0u8; 4];
         if tcp_read.read_exact(&mut nb_hdr).await.is_err() {
-            break; // Connection closed
+            if verbose() {
+                eprintln!("[smb2] dispatcher: connection closed (read header failed)");
+            }
+            break;
         }
         let payload_len = protocol::decode_nb_header(&nb_hdr);
         if payload_len < protocol::SMB2_HEADER_SIZE {
+            if verbose() {
+                eprintln!(
+                    "[smb2] dispatcher: payload too short ({payload_len} < {})",
+                    protocol::SMB2_HEADER_SIZE
+                );
+            }
             break;
         }
 
         let mut payload = vec![0u8; payload_len];
         if tcp_read.read_exact(&mut payload).await.is_err() {
+            if verbose() {
+                eprintln!("[smb2] dispatcher: connection closed (read payload failed)");
+            }
             break;
         }
 
         let resp = match protocol::decode_message(&payload) {
             Ok(r) => r,
-            Err(_) => break,
+            Err(e) => {
+                if verbose() {
+                    eprintln!("[smb2] dispatcher: decode error: {e}");
+                }
+                break;
+            }
         };
 
         let mid = resp.header.message_id;
+        let cmd = resp.header.command;
+        let status = resp.header.status;
+        let credits = resp.header.credit_request_response;
+
+        if verbose() {
+            eprintln!(
+                "[smb2] dispatcher: mid={mid} cmd={cmd:?} status={} credits={credits} \
+                 body_len={}",
+                status_name(status),
+                resp.body.len()
+            );
+        }
+
+        // STATUS_PENDING is an interim response — the server will send
+        // the real response later with the same message ID. Do NOT
+        // consume the pending entry for this.
+        if status == protocol::STATUS_PENDING {
+            if verbose() {
+                eprintln!(
+                    "[smb2] dispatcher: STATUS_PENDING for mid={mid}, \
+                     keeping pending slot open"
+                );
+            }
+            continue;
+        }
 
         // Route to the waiting task
         let sender = {
@@ -223,16 +361,31 @@ async fn dispatch_responses(mut tcp_read: OwnedReadHalf, pending: Arc<Mutex<Pend
 
         if let Some(tx) = sender {
             let _ = tx.send(Ok(resp));
+        } else if verbose() {
+            eprintln!(
+                "[smb2] dispatcher: no pending request for mid={mid} cmd={cmd:?} \
+                 (possibly STATUS_PENDING interim response)"
+            );
         }
     }
 
     // Connection closed — fail all pending requests
     let mut map = pending.lock().await;
-    for (_, tx) in map.drain() {
+    let count = map.len();
+    if verbose() && count > 0 {
+        eprintln!("[smb2] dispatcher: failing {count} pending request(s)");
+    }
+    for (mid, tx) in map.drain() {
+        if verbose() {
+            eprintln!("[smb2] dispatcher: failing pending mid={mid}");
+        }
         let _ = tx.send(Err(io::Error::new(
             io::ErrorKind::ConnectionAborted,
             "SMB2 connection closed",
         )));
+    }
+    if verbose() {
+        eprintln!("[smb2] dispatcher task exiting");
     }
 }
 
@@ -297,24 +450,31 @@ async fn send_smb2_read(
         .await
         .map_err(|_| io::Error::other("response channel closed"))??;
 
-    if resp.header.status != STATUS_SUCCESS && resp.header.status != STATUS_BUFFER_OVERFLOW {
-        if resp.header.status == protocol::STATUS_PIPE_DISCONNECTED
-            || resp.header.status == protocol::STATUS_PIPE_CLOSING
-            || resp.header.status == protocol::STATUS_PIPE_BROKEN
-            || resp.header.status == protocol::STATUS_END_OF_FILE
-        {
-            return Ok(Vec::new());
-        }
-        return Err(io::Error::other(format!(
-            "SMB2 READ failed: NT status 0x{:08X}",
-            resp.header.status
-        )));
+    if resp.header.status == STATUS_SUCCESS || resp.header.status == STATUS_BUFFER_OVERFLOW {
+        let read_resp = protocol::read::decode_read_response(&resp.body)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        return Ok(read_resp.data);
     }
 
-    let read_resp = protocol::read::decode_read_response(&resp.body)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    // EOF-like statuses → return empty vec (signals end of stream)
+    if resp.header.status == protocol::STATUS_PIPE_DISCONNECTED
+        || resp.header.status == protocol::STATUS_PIPE_CLOSING
+        || resp.header.status == protocol::STATUS_PIPE_BROKEN
+        || resp.header.status == protocol::STATUS_END_OF_FILE
+    {
+        if verbose() {
+            eprintln!(
+                "[smb2] read: pipe EOF status: {}",
+                status_name(resp.header.status)
+            );
+        }
+        return Ok(Vec::new());
+    }
 
-    Ok(read_resp.data)
+    Err(io::Error::other(format!(
+        "SMB2 READ failed: {}",
+        status_name(resp.header.status)
+    )))
 }
 
 async fn send_smb2_write(
@@ -340,8 +500,8 @@ async fn send_smb2_write(
 
     if resp.header.status != STATUS_SUCCESS {
         return Err(io::Error::other(format!(
-            "SMB2 WRITE failed: NT status 0x{:08X}",
-            resp.header.status
+            "SMB2 WRITE failed: {}",
+            status_name(resp.header.status)
         )));
     }
 
