@@ -1,5 +1,6 @@
 pub mod exec;
 pub mod serial;
+pub mod smb_pipe;
 pub mod stdio;
 pub mod tcp;
 #[cfg(unix)]
@@ -102,6 +103,9 @@ pub fn parse_strategy(input: &str) -> Result<Strategy> {
     if let Some(s) = serial::try_parse_strategy(&elem) {
         return Ok(Strategy::Connect(Box::new(s)));
     }
+    if let Some(s) = smb_pipe::try_parse_connect_strategy(&elem) {
+        return Ok(Strategy::Connect(Box::new(s)));
+    }
 
     anyhow::bail!("\"{input}\" is not available on [address1]")
 }
@@ -140,6 +144,9 @@ pub fn parse_factory(input: &str) -> Result<Factory> {
         }
     }
     if let Some(f) = serial::try_parse_factory(&elem) {
+        return Ok(Factory::new(Box::new(f)));
+    }
+    if let Some(f) = smb_pipe::try_parse_factory(&elem) {
         return Ok(Factory::new(Box::new(f)));
     }
 

@@ -26,15 +26,23 @@ Address types for ADDRESS1 (connect or listen):
   HVSOCK-LISTEN:<serviceId>   Hyper-V socket listen       [windows]
   WSL:<cmd>,distribution=..   WSL process                 [windows]
   SP:<port>,baudrate=...      Serial port
+  SMB-PIPE:<srv>:<pipe>       Remote named pipe via SMB2
 
 Address types for ADDRESS2 (connect only):
-  STDIO, TCP, EXEC, UNIX, NPIPE, HVSOCK, WSL, SP
+  STDIO, TCP, EXEC, UNIX, NPIPE, HVSOCK, WSL, SP, SMB-PIPE
+
+SMB-PIPE options:
+  user=<user>                 NTLM username (omit for anonymous)
+  password=<pass>             Password (supports $ENV_VAR)
+  domain=<domain>             NTLM domain (default: .)
+  port=<port>                 TCP port (default: 445)
 
 Examples:
   winsocat TCP-LISTEN:127.0.0.1:8000 STDIO
   winsocat STDIO TCP:127.0.0.1:80
   winsocat TCP-LISTEN:127.0.0.1:9000 EXEC:ls
-  winsocat TCP-LISTEN:127.0.0.1:8080 TCP:example.com:80"
+  winsocat TCP-LISTEN:127.0.0.1:8080 TCP:example.com:80
+  winsocat TCP-LISTEN:8080 SMB-PIPE:fileserver:mypipe,user=admin,password=$PASS"
 )]
 struct Cli {
     /// First address (connect or listen mode)
