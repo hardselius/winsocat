@@ -264,6 +264,10 @@ winsocat STDIO SMB-PIPE:server:pipe,user=admin,password=$SMB_PASSWORD
 **Troubleshooting:** Pass `-v` to see the full SMB2 handshake and
 per-message diagnostics on stderr.
 
+**Limitations:** SMB2 message signing is not implemented. Connections
+to servers that require signing (`RequireSecuritySignature = True`)
+will be rejected during session setup.
+
 ## License
 
 [MIT](LICENSE)
