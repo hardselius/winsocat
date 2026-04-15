@@ -1199,6 +1199,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "smb2-pipe",
  "socket2 0.5.10",
  "tokio",
  "tokio-serial",
