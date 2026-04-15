@@ -2,17 +2,25 @@
 
 ## Build & Test
 
+This is a Cargo workspace. Build and test the entire workspace:
+
 ```bash
-cargo build
-cargo test
+cargo build --workspace
+cargo test --workspace
 ```
 
-Any stable Rust toolchain works. CI runs on `windows-latest`, `ubuntu-latest`, and `macos-latest`. The app targets Windows for named pipes, Hyper-V sockets, and WSL endpoints; STDIO, TCP, UNIX, EXEC, and serial port endpoints work on all platforms.
+Build or test a single crate:
+```bash
+cargo build -p winsocat
+cargo test -p smb2-pipe
+```
 
 Run a single test:
 ```bash
 cargo test test_name
 ```
+
+Any stable Rust toolchain works. CI runs on `windows-latest`, `ubuntu-latest`, and `macos-latest`. The app targets Windows for named pipes, Hyper-V sockets, and WSL endpoints; STDIO, TCP, UNIX, EXEC, and serial port endpoints work on all platforms.
 
 ## Formatting & Linting
 
@@ -20,7 +28,7 @@ Both are enforced by CI and must pass before tests run.
 
 ```bash
 cargo fmt --all
-cargo clippy --all-targets -- -D warnings -W clippy::all -W clippy::correctness -W clippy::complexity -W clippy::style -W clippy::suspicious -W clippy::perf
+cargo clippy --workspace --all-targets -- -D warnings -W clippy::all -W clippy::correctness -W clippy::complexity -W clippy::style -W clippy::suspicious -W clippy::perf
 ```
 
 Run `cargo fmt` before committing. Run clippy frequently during development to catch issues early.
@@ -28,25 +36,33 @@ Run `cargo fmt` before committing. Run clippy frequently during development to c
 ## Project Layout
 
 ```
-src/
-  main.rs              # CLI entry point (clap), parse → strategy + factory → relay
-  lib.rs               # public library root
-  address.rs           # AddressElement parser (TAG:addr,opt=val)
-  relay.rs             # bidirectional copy via tokio::io::copy_bidirectional
-  endpoint/
-    mod.rs             # Connector/Listener traits, Strategy enum, parse dispatch
-    stdio.rs           # STDIO
-    tcp.rs             # TCP, TCP-LISTEN
-    exec.rs            # EXEC (child process stdin/stdout)
-    unix.rs            # UNIX, UNIX-LISTEN
-    serial.rs          # SP (serial port, via tokio-serial)
-    npipe.rs           # NPIPE, NPIPE-LISTEN  [cfg(windows)]
-    hvsock.rs          # HVSOCK, HVSOCK-LISTEN [cfg(windows)]
-    wsl.rs             # WSL (sugar over EXEC) [cfg(windows)]
-tests/
-  integration_tests.rs # TCP, EXEC, UNIX, STDIO, multi-conn integration tests
-helpers/
-  echo_helper.rs       # Minimal stdin→stdout copier for EXEC tests
+Cargo.toml                   # workspace root
+crates/
+  winsocat/                  # CLI binary + library crate
+    Cargo.toml
+    src/
+      main.rs                # CLI entry point (clap), parse → strategy + factory → relay
+      lib.rs                 # public library root
+      address.rs             # AddressElement parser (TAG:addr,opt=val)
+      relay.rs               # bidirectional copy via tokio::io::copy_bidirectional
+      endpoint/
+        mod.rs               # Connector/Listener traits, Strategy enum, parse dispatch
+        stdio.rs             # STDIO
+        tcp.rs               # TCP, TCP-LISTEN
+        exec.rs              # EXEC (child process stdin/stdout)
+        unix.rs              # UNIX, UNIX-LISTEN
+        serial.rs            # SP (serial port, via tokio-serial)
+        npipe.rs             # NPIPE, NPIPE-LISTEN  [cfg(windows)]
+        hvsock.rs            # HVSOCK, HVSOCK-LISTEN [cfg(windows)]
+        wsl.rs               # WSL (sugar over EXEC) [cfg(windows)]
+    tests/
+      integration_tests.rs   # TCP, EXEC, UNIX, STDIO, multi-conn integration tests
+    helpers/
+      echo_helper.rs         # Minimal stdin→stdout copier for EXEC tests
+  smb2-pipe/                 # Minimal SMB2 client for remote named pipe access
+    Cargo.toml
+    src/
+      lib.rs                 # library root (skeleton)
 ```
 
 The `flake.nix` / `rust-toolchain.toml` / `.envrc` provide a Nix dev shell.
@@ -65,11 +81,11 @@ The app takes two positional arguments: `address1` (strategy — drives executio
 
 ### Adding a new endpoint
 
-1. Create `src/endpoint/new_type.rs` with:
+1. Create `crates/winsocat/src/endpoint/new_type.rs` with:
    - A config struct with parsed fields
    - A `try_parse_*` function taking `&AddressElement` → `Option<ConfigStruct>`
    - A connector struct implementing `Connector` (and optionally a listener struct implementing `Listener`)
-2. Add `pub mod new_type;` to `src/endpoint/mod.rs`
+2. Add `pub mod new_type;` to `crates/winsocat/src/endpoint/mod.rs`
 3. Wire `try_parse_*` calls into `parse_strategy()` and/or `parse_factory()` — first match wins
 4. Gate Windows-only endpoints with `#[cfg(windows)]`
 
@@ -83,9 +99,14 @@ Parsed by `AddressElement::try_parse`. Supports quoted values in the address por
 
 ## Dependencies
 
+### winsocat
 - **clap 4** — CLI argument parsing with derive macros
 - **tokio** (full features) — async runtime, TCP, Unix sockets, process, named pipes
 - **tokio-serial** — serial port support (cross-platform)
 - **async-trait** — async methods in traits
 - **anyhow** — error handling
 - **socket2 + uuid** (Windows only) — raw Hyper-V socket support
+
+### smb2-pipe
+- **tokio** (net, io-util) — async TCP and I/O utilities
+- **anyhow** — error handling

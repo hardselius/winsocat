@@ -1,0 +1,11 @@
+[package]
+name = "smb2-pipe"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal SMB2 client for reading and writing remote named pipes"
+license = "MIT"
+repository = "https://github.com/hardselius/winsocat"
+
+[dependencies]
+tokio = { version = "1", features = ["net", "io-util"] }
+anyhow = "1"
